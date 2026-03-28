@@ -65,15 +65,28 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('USER_INPUT', (payload) => {
-    const text = String(payload?.text || '').trim();
+  socket.on('USER_INPUT', async (payload = {}) => {
+    const metadata =
+      payload?.metadata && typeof payload.metadata === 'object'
+        ? payload.metadata
+        : {};
+    const source = String(metadata?.source || payload?.source || 'unknown');
+    const interruptActiveTts = Boolean(metadata?.interrupt_active_tts);
+
+    // Prioridad maxima: si el usuario interrumpe, cortamos TTS inmediatamente.
+    if (interruptActiveTts) {
+      io.emit('STOP_TTS');
+      console.log(`[socket] STOP_TTS triggered by ${source}`);
+    }
+
+    const text = String(payload?.content ?? payload?.text ?? '').trim();
     if (!text) {
       return;
     }
 
-    const source = String(payload?.source || 'unknown');
     const clientTimestamp = Number(payload?.timestamp || 0);
-    const fingerprint = `${source}:${text.toLowerCase()}`;
+    const clientFingerprint = String(payload?.fingerprint || '').trim();
+    const fingerprint = clientFingerprint || `${source}:${text.toLowerCase()}`;
     const now = Date.now();
 
     const duplicatedByFingerprint =
@@ -97,55 +110,58 @@ io.on('connection', (socket) => {
     globalLastInputClientTimestamp = clientTimestamp;
     globalLastInputReceivedAt = now;
 
-    (async () => {
+    try {
+      console.log('[socket] USER_INPUT', { text, source });
+
+      await memoryStore.saveMemory({
+        role: 'user',
+        content: text,
+        inputType: source,
+        fingerprint,
+      });
+
+      const recentMemories = await memoryStore.getRecentMemories(14);
+
+      const airaText = await generateAiraResponse({
+        userText: text,
+        recentMemories,
+        inputSource: source,
+      });
+
+      await memoryStore.saveMemory({
+        role: 'aira',
+        content: airaText,
+      });
+
+      socket.emit('AIRA_RESPONSE', {
+        text: airaText,
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      const fallbackText = buildFallbackMessage(error);
+      console.error('[socket] USER_INPUT failure', error);
+
       try {
-        console.log('[socket] USER_INPUT', { text, source });
-
-        await memoryStore.saveMemory({
-          role: 'user',
-          content: text,
-        });
-
-        const recentMemories = await memoryStore.getRecentMemories(14);
-
-        const airaText = await generateAiraResponse({
-          userText: text,
-          recentMemories,
-        });
-
         await memoryStore.saveMemory({
           role: 'aira',
-          content: airaText,
+          content: fallbackText,
         });
-
-        socket.emit('AIRA_RESPONSE', {
-          text: airaText,
-          timestamp: Date.now(),
-        });
-      } catch (error) {
-        const fallbackText = buildFallbackMessage(error);
-        console.error('[socket] USER_INPUT failure', error);
-
-        try {
-          await memoryStore.saveMemory({
-            role: 'aira',
-            content: fallbackText,
-          });
-        } catch (saveError) {
-          console.error('[socket] fallback save failure', saveError);
-        }
-
-        socket.emit('AIRA_RESPONSE', {
-          text: fallbackText,
-          timestamp: Date.now(),
-          fallback: true,
-        });
-
-        socket.emit('SYSTEM_MESSAGE', {
-          message: 'Aira entro en recaida temporal; se envio respuesta de contingencia.',
-        });
+      } catch (saveError) {
+        console.error('[socket] fallback save failure', saveError);
       }
-    })();
+
+      socket.emit('AIRA_RESPONSE', {
+        text: fallbackText,
+        timestamp: Date.now(),
+        fallback: true,
+      });
+
+      socket.emit('SYSTEM_MESSAGE', {
+        type: 'error',
+        msg: 'Error en el flujo de memoria.',
+        message: 'Aira entro en recaida temporal; se envio respuesta de contingencia.',
+      });
+    }
   });
 
   socket.on('disconnect', (reason) => {

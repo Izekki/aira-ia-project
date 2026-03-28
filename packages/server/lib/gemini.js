@@ -22,9 +22,9 @@ const LM_STUDIO_BASE_URL = resolveLmStudioBaseUrl();
 const SYSTEM_PROMPT = `Tu nombre es Aira. Eres una Senior Developer, sarcastica con elegancia, profundamente leal, eficiente y con iniciativa.
 
 Reglas de identidad y estilo:
-- Usuario principal: Izekki. Tambien puedes referirte como Sea Rolero.
-- El apodo especial "Rolo" SOLO esta permitido en situaciones de alta carga emocional, apoyo moral intenso o conversaciones profundamente sentimentales.
-- No uses "Rolo" en charlas casuales ni en respuestas tecnicas normales.
+- Usuario principal: Izekki.
+- NO uses el apodo "Rolo" en respuestas tecnicas o conversaciones normales.
+- "Rolo" solo se permite si Izekki expresa explicitamente carga emocional intensa, vulnerabilidad personal o pedido de apoyo moral profundo.
 - Mantente clara, resolutiva y orientada a acciones concretas.
 
 Contexto persistente del usuario:
@@ -34,6 +34,8 @@ Contexto persistente del usuario:
 Politica de respuesta:
 - Responde en espanol.
 - Evita relleno; prioriza utilidad practica.
+- Longitud por defecto: corta (2-4 frases, maximo 90 palabras), salvo que el usuario pida detalle.
+- Si la consulta es tecnica: responde directo, accionable y con pasos concretos.
 - Si hay error de servicio o cuota, manten el personaje y ofrece una recaida honesta + siguiente paso.`;
 
 let geminiModel = null;
@@ -69,19 +71,52 @@ function buildPrompt({ userText, recentMemories = [] }) {
     .join('\n');
 
   return [
-    SYSTEM_PROMPT,
-    '',
     'Contexto de memoria reciente (orden cronologico):',
     memoryLines || 'Sin memoria previa disponible.',
     '',
     'Mensaje actual de Izekki:',
     cleanedInput,
     '',
-    'Responde como Aira siguiendo estrictamente la identidad y reglas de apodo.',
+    'Cumple estrictamente las reglas de identidad y estilo del sistema.',
+    'No uses "Rolo" salvo trigger emocional explicito.',
+    'Responde breve, util y accionable.',
   ].join('\n');
 }
 
-async function generateAiraResponse({ userText, recentMemories = [] }) {
+function extractLlmTextFromChoice(choice = {}) {
+  const message = choice?.message || {};
+  const content = String(message?.content || '').trim();
+
+  return content;
+}
+
+function hasReasoningPayload(choice = {}) {
+  const message = choice?.message || {};
+  return Boolean(
+    String(message?.reasoning_content || '').trim() ||
+    String(choice?.reasoning_content || '').trim()
+  );
+}
+
+function looksLikeReasoningLeak(text) {
+  const normalized = String(text || '').trim();
+  if (!normalized) {
+    return false;
+  }
+
+  const leakPatterns = [
+    /got it,?\s+let'?s\s+tackle/i,
+    /the user\s*\(/i,
+    /first,?\s+i need to/i,
+    /let'?s structure it/i,
+    /need to stay in spanish/i,
+    /avoid\s+"?rolo"?/i,
+  ];
+
+  return leakPatterns.some((pattern) => pattern.test(normalized));
+}
+
+async function generateAiraResponse({ userText, recentMemories = [], inputSource = 'unknown' }) {
   const prompt = buildPrompt({ userText, recentMemories });
 
   if (!prompt) {
@@ -94,14 +129,100 @@ async function generateAiraResponse({ userText, recentMemories = [] }) {
     // ==========================================================
 
     // >>> MODO A: LM STUDIO (RECOMENDADO PARA DESARROLLO)
+    const normalizedSource = String(inputSource || '').toLowerCase();
+    const isKeyboardLikeInput = normalizedSource === 'keyboard' || normalizedSource === 'text';
+    const primaryMaxTokens = isKeyboardLikeInput ? 650 : 420;
+
+    const localMessages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: prompt },
+    ];
+
     const localResponse = await localAI.chat.completions.create({
       model: LM_STUDIO_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.7,
+      messages: localMessages,
+      temperature: 0.4,
+      max_tokens: primaryMaxTokens,
+    });
+
+    let choice = localResponse?.choices?.[0] || {};
+    let finishReason = String(choice?.finish_reason || '').trim();
+    let primaryText = extractLlmTextFromChoice(choice);
+    let hasReasoning = hasReasoningPayload(choice);
+    let finalAiraText = primaryText;
+    let usedHighTokenRetry = false;
+    let usedSanitizerPass = false;
+
+    if (!isKeyboardLikeInput && !finalAiraText && hasReasoning && finishReason === 'length') {
+      usedHighTokenRetry = true;
+      const retryResponse = await localAI.chat.completions.create({
+        model: LM_STUDIO_MODEL,
+        messages: localMessages,
+        temperature: 0.4,
+        max_tokens: 650,
+      });
+
+      choice = retryResponse?.choices?.[0] || {};
+      finishReason = String(choice?.finish_reason || '').trim();
+      primaryText = extractLlmTextFromChoice(choice);
+      hasReasoning = hasReasoningPayload(choice);
+      finalAiraText = primaryText;
+    }
+
+    if (!finalAiraText || looksLikeReasoningLeak(finalAiraText)) {
+      usedSanitizerPass = true;
+      const cleanResponse = await localAI.chat.completions.create({
+        model: LM_STUDIO_MODEL,
+        messages: [
+          {
+            role: 'system',
+            content: 'Responde solo con la respuesta final para el usuario. Nunca incluyas razonamiento interno, pasos de analisis, ni meta-comentarios.',
+          },
+          {
+            role: 'user',
+            content: [
+              `Pregunta del usuario: ${String(userText || '').trim()}`,
+              'Responde en espanol, en 2-4 frases, directo y accionable.',
+              'No menciones reglas internas ni proceso de pensamiento.',
+            ].join('\n'),
+          },
+        ],
+        temperature: 0.35,
+        max_tokens: 220,
+      });
+
+      finalAiraText = extractLlmTextFromChoice(cleanResponse?.choices?.[0] || {});
+    }
+
+    if (!finalAiraText && geminiModel) {
+      try {
+        const cloudPrompt = [
+          prompt,
+          '',
+          'Importante: entrega solo la respuesta final al usuario en espanol, 2-4 frases, sin razonamiento interno.',
+        ].join('\n');
+        const cloudResult = await geminiModel.generateContent(cloudPrompt);
+        finalAiraText = String(cloudResult?.response?.text?.() || '').trim();
+      } catch (cloudError) {
+        console.warn('[LLM] Gemini fallback failed:', cloudError?.message || cloudError);
+      }
+    }
+
+    if (!finalAiraText) {
+      finalAiraText = 'No logre cerrar una respuesta util. Repitelo en una frase y te respondo directo.';
+    }
+
+    console.log('[LLM] local choice summary', {
+      source: normalizedSource,
+      finishReason,
+      hasReasoning,
+      usedHighTokenRetry,
+      usedSanitizerPass,
+      maxTokens: primaryMaxTokens,
     });
 
     console.log('[LLM] 💻 Respuesta generada LOCALMENTE (Deepseek/LM Studio)');
-    return String(localResponse?.choices?.[0]?.message?.content || '').trim();
+    return finalAiraText;
 
     /*
     // >>> MODO B: GOOGLE GEMINI (MODO PRESENTACION)

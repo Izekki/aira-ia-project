@@ -10,10 +10,23 @@ const VOICE_ENGINE_MISSING_MESSAGE =
 const VISUALIZER_STATE = {
   IDLE: 'IDLE',
   LISTENING: 'LISTENING',
+  PROCESSING: 'PROCESSING',
   SPEAKING: 'SPEAKING',
 };
 
 const DEFAULT_SPEECH_PROFILE = 'stable';
+const DUPLICATE_EMIT_WINDOW_MS = 7000;
+
+function normalizeSpeechKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 function resolveSpeechProfile() {
   const runtimeProfile =
@@ -28,13 +41,18 @@ function resolveSpeechProfile() {
 
 export default function App() {
   const socketRef = useRef(null);
+  const chatBottomRef = useRef(null);
   const speechProfile = resolveSpeechProfile();
+  const activePttKeyRef = useRef('');
+  const processingCountRef = useRef(0);
+  const isAiraSpeakingRef = useRef(false);
 
   const [isConnected, setIsConnected] = useState(false);
   const [serverTime, setServerTime] = useState('---');
   const [messages, setMessages] = useState([]);
-  const [transcriptHistory, setTranscriptHistory] = useState([]);
   const [visualizerState, setVisualizerState] = useState(VISUALIZER_STATE.IDLE);
+  const [chatInput, setChatInput] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const lastProcessedFinalIdRef = useRef(null);
   const lastEmittedSpeechTextRef = useRef('');
@@ -43,14 +61,31 @@ export default function App() {
   const [isWakeConfirmed, setIsWakeConfirmed] = useState(false);
   const [isSpeechBootReady, setIsSpeechBootReady] = useState(false);
 
-  const { speak, isAiraSpeaking } = useVoiceSynthesis();
+  const { speak, cancel, isAiraSpeaking } = useVoiceSynthesis();
 
-  const { isSupported, isListening, interimTranscript, finalResult, error } =
+  const {
+    isSupported,
+    isListening,
+    interimTranscript,
+    finalResult,
+    error,
+    startPTT,
+    stopPTT,
+  } =
     useSpeech({
       enabled: isWakeConfirmed && isSpeechBootReady,
-      paused: isAiraSpeaking,
       profile: speechProfile,
     });
+
+  function increaseProcessing() {
+    processingCountRef.current += 1;
+    setIsProcessing(true);
+  }
+
+  function decreaseProcessing() {
+    processingCountRef.current = Math.max(0, processingCountRef.current - 1);
+    setIsProcessing(processingCountRef.current > 0);
+  }
 
   function handleWakeActivation() {
     setIsWakeConfirmed(true);
@@ -59,6 +94,10 @@ export default function App() {
   useEffect(() => {
     setIsSpeechBootReady(isWakeConfirmed);
   }, [isWakeConfirmed]);
+
+  useEffect(() => {
+    isAiraSpeakingRef.current = isAiraSpeaking;
+  }, [isAiraSpeaking]);
 
   useEffect(() => {
     if (!socketRef.current) {
@@ -111,6 +150,7 @@ export default function App() {
     }
 
     function onAiraResponse(payload) {
+      decreaseProcessing();
       const responseText = String(payload?.text || '').trim();
       if (!responseText) {
         return;
@@ -118,6 +158,10 @@ export default function App() {
 
       setMessages((prev) => [...prev, `Aira: ${responseText}`]);
       speak(responseText);
+    }
+
+    function onStopTts() {
+      cancel();
     }
 
     setIsConnected(socket.connected);
@@ -130,6 +174,7 @@ export default function App() {
     socket.on('SYSTEM_MESSAGE', onSystemMessage);
     socket.on('AIRA_NUDGE', onAiraNudge);
     socket.on('AIRA_RESPONSE', onAiraResponse);
+    socket.on('STOP_TTS', onStopTts);
 
     socket.connect();
 
@@ -142,9 +187,10 @@ export default function App() {
       socket.off('SYSTEM_MESSAGE', onSystemMessage);
       socket.off('AIRA_NUDGE', onAiraNudge);
       socket.off('AIRA_RESPONSE', onAiraResponse);
+      socket.off('STOP_TTS', onStopTts);
       socket.disconnect();
     };
-  }, [speak]);
+  }, [speak, cancel]);
 
   useEffect(() => {
     if (isAiraSpeaking) {
@@ -157,8 +203,13 @@ export default function App() {
       return;
     }
 
+    if (isProcessing) {
+      setVisualizerState(VISUALIZER_STATE.PROCESSING);
+      return;
+    }
+
     setVisualizerState(VISUALIZER_STATE.IDLE);
-  }, [isListening, isAiraSpeaking]);
+  }, [isListening, isAiraSpeaking, isProcessing]);
 
   useEffect(() => {
     function onVoiceEngineMissing() {
@@ -183,34 +234,162 @@ export default function App() {
       return;
     }
 
+    if (lastProcessedFinalIdRef.current === finalResult.id) {
+      return;
+    }
+
     lastProcessedFinalIdRef.current = finalResult.id;
 
     const normalizedSpeechText = String(finalResult.text || '').trim();
-    const normalizedSpeechKey = normalizedSpeechText.toLowerCase();
+    const normalizedSpeechKey = normalizeSpeechKey(normalizedSpeechText);
     const now = Date.now();
     const isDuplicatedSpeech =
       normalizedSpeechKey === lastEmittedSpeechTextRef.current &&
-      now - lastEmittedSpeechAtRef.current <= 2800;
+      now - lastEmittedSpeechAtRef.current <= DUPLICATE_EMIT_WINDOW_MS;
 
     if (isDuplicatedSpeech) {
       return;
     }
 
-    setTranscriptHistory((prev) => [normalizedSpeechText, ...prev].slice(0, 8));
+    setMessages((prev) => [...prev, `Tu: ${normalizedSpeechText}`]);
+    lastEmittedSpeechTextRef.current = normalizedSpeechKey;
+    lastEmittedSpeechAtRef.current = now;
 
     if (!isConnected) {
       return;
     }
 
-    lastEmittedSpeechTextRef.current = normalizedSpeechKey;
-    lastEmittedSpeechAtRef.current = now;
-
+    increaseProcessing();
     socketRef.current?.emit('USER_INPUT', {
-      text: normalizedSpeechText,
+      content: normalizedSpeechText,
+      fingerprint: `ptt:${normalizedSpeechKey}`,
       timestamp: now,
-      source: 'speech',
+      metadata: {
+        source: 'ptt',
+        interrupt_active_tts: isAiraSpeakingRef.current,
+      },
     });
   }, [finalResult, isConnected]);
+
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  function sendTextMessage(rawText) {
+    const text = String(rawText || '').trim();
+    if (!text) {
+      return;
+    }
+
+    const now = Date.now();
+    setMessages((prev) => [...prev, `Tu: ${text}`]);
+    setChatInput('');
+
+    if (!isConnected) {
+      return;
+    }
+
+    const normalizedKey = normalizeSpeechKey(text);
+    increaseProcessing();
+    socketRef.current?.emit('USER_INPUT', {
+      content: text,
+      fingerprint: `keyboard:${normalizedKey}`,
+      timestamp: now,
+      metadata: {
+        source: 'keyboard',
+        interrupt_active_tts: isAiraSpeakingRef.current,
+      },
+    });
+  }
+
+  function handleInputKeyDown(event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      sendTextMessage(chatInput);
+    }
+  }
+
+  useEffect(() => {
+    function isEditableTarget(target) {
+      if (!target || !(target instanceof HTMLElement)) {
+        return false;
+      }
+
+      const tagName = target.tagName.toLowerCase();
+      return (
+        target.isContentEditable ||
+        tagName === 'input' ||
+        tagName === 'textarea' ||
+        tagName === 'select'
+      );
+    }
+
+    function emitInterrupt(source) {
+      if (!isConnected || !socketRef.current) {
+        return;
+      }
+
+      socketRef.current.emit('USER_INPUT', {
+        content: '',
+        fingerprint: `interrupt:${source}:${Date.now()}`,
+        timestamp: Date.now(),
+        metadata: {
+          source,
+          interrupt_active_tts: true,
+        },
+      });
+    }
+
+    function onKeyDown(event) {
+      const isPttKey = event.code === 'Space' || event.code === 'AltLeft' || event.code === 'AltRight';
+      if (!isPttKey || event.repeat || activePttKeyRef.current) {
+        return;
+      }
+
+      if (isEditableTarget(event.target)) {
+        return;
+      }
+
+      event.preventDefault();
+      activePttKeyRef.current = event.code;
+
+      if (isAiraSpeakingRef.current) {
+        cancel();
+        emitInterrupt('ptt');
+      }
+
+      startPTT();
+    }
+
+    function onKeyUp(event) {
+      if (!activePttKeyRef.current || event.code !== activePttKeyRef.current) {
+        return;
+      }
+
+      event.preventDefault();
+      activePttKeyRef.current = '';
+      stopPTT();
+    }
+
+    function onWindowBlur() {
+      if (!activePttKeyRef.current) {
+        return;
+      }
+
+      activePttKeyRef.current = '';
+      stopPTT();
+    }
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onWindowBlur);
+
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onWindowBlur);
+    };
+  }, [isConnected, startPTT, stopPTT, cancel]);
 
   function sendPing() {
     socketRef.current?.emit('CLIENT_PING', {
@@ -235,7 +414,7 @@ export default function App() {
       </section>
 
       <section className="panel panel-right">
-        <h2 className="panel-title">Canal de voz y eventos</h2>
+        <h2 className="panel-title">Chat con Aira</h2>
 
         <div className="status-row">
           <span className={`status-dot ${isConnected ? 'ok' : 'off'}`} />
@@ -243,13 +422,15 @@ export default function App() {
         </div>
 
         <div className="status-row">
-          <span className={`status-dot ${isListening ? 'ok' : 'off'}`} />
+          <span className={`status-dot ${isListening ? 'ok' : isProcessing ? 'processing' : 'off'}`} />
           <span>
             {isSupported
               ? isFatalSpeechError
                 ? 'FATAL_ERROR'
                 : isListening
                   ? 'Escuchando microfono'
+                  : isProcessing
+                    ? 'Procesando consulta'
                   : !isWakeConfirmed
                     ? 'Pendiente de activacion'
                     : isSpeechBootReady
@@ -262,32 +443,84 @@ export default function App() {
         <p className="server-time">Heartbeat del servidor: {serverTime}</p>
         {error && <p className="speech-error">{error}</p>}
 
-        <section className="transcript-box" aria-live="polite">
-          <h2>Transcripcion</h2>
-          <p className="interim-text">
-            {interimTranscript || 'Esperando voz del usuario...'}
-          </p>
+        <section className="chat-container" aria-live="polite">
+          {messages.length === 0 && (
+            <article className="chat-bubble chat-bubble-aira">
+              Hola, soy Aira. Escribe tu consulta o presiona el microfono.
+            </article>
+          )}
 
-          <ul className="transcript-history">
-            {transcriptHistory.length === 0 && (
-              <li>Aun no hay frases finales detectadas.</li>
-            )}
-            {transcriptHistory.map((line, index) => (
-              <li key={`${line}-${index}`}>{line}</li>
-            ))}
-          </ul>
+          {messages.map((message, index) => {
+            const isUser = message.startsWith('Tu:');
+            const bubbleClass = isUser ? 'chat-bubble-user' : 'chat-bubble-aira';
+            const visibleMessage = isUser
+              ? message.replace(/^Tu:\s*/, '')
+              : message.replace(/^Aira:\s*/, '');
+
+            return (
+              <article className={`chat-bubble ${bubbleClass}`} key={`${message}-${index}`}>
+                {visibleMessage}
+              </article>
+            );
+          })}
+
+          <div ref={chatBottomRef} />
         </section>
 
-        <button type="button" onClick={sendPing} disabled={!isConnected}>
-          Enviar ping
-        </button>
+        <section className="control-bar" aria-label="Entrada multimodal">
+          <button className="icon-btn add-media" type="button" onClick={sendPing}>
+            +
+          </button>
 
-        <ul className="messages">
-          {messages.length === 0 && <li>Esperando eventos del servidor...</li>}
-          {messages.map((message, index) => (
-            <li key={`${message}-${index}`}>{message}</li>
-          ))}
-        </ul>
+          <textarea
+            className="chat-input"
+            placeholder="Hola, que haremos hoy?"
+            value={chatInput}
+            onChange={(event) => setChatInput(event.target.value)}
+            onKeyDown={handleInputKeyDown}
+            rows={1}
+          />
+
+          <div className="action-buttons">
+            <button
+              className="icon-btn send-btn"
+              type="button"
+              onClick={() => sendTextMessage(chatInput)}
+              aria-label="Enviar mensaje"
+            >
+              🚀
+            </button>
+            <button
+              className={`icon-btn mic-btn ${isListening ? 'listening' : ''}`}
+              type="button"
+              onMouseDown={() => {
+                if (isAiraSpeakingRef.current) {
+                  cancel();
+                }
+                startPTT();
+              }}
+              onMouseUp={stopPTT}
+              onMouseLeave={stopPTT}
+              onTouchStart={(event) => {
+                event.preventDefault();
+                if (isAiraSpeakingRef.current) {
+                  cancel();
+                }
+                startPTT();
+              }}
+              onTouchEnd={stopPTT}
+              aria-label={isListening ? 'Listening' : 'Push to Talk'}
+            >
+              🎙️
+            </button>
+          </div>
+        </section>
+
+        <p className="voice-hint">
+          {isListening
+            ? 'PTT activo: suelta Space o Alt para enviar voz.'
+            : interimTranscript || 'Pulsa Enter para enviar. Shift + Enter agrega salto de linea.'}
+        </p>
       </section>
 
       {!isWakeConfirmed && (

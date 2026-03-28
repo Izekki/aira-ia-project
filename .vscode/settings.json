@@ -3,6 +3,18 @@
         "npm install": true,
         "npm --prefix packages/client": true,
         "Get-NetTCPConnection": true,
-        "npm run build": true
+        "npm run build": true,
+        "/^Set-Location \"c:/Proyectos/aira-ia-project\"; node --check packages/server/lib/gemini\\.js$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^Set-Location \"c:/Proyectos/aira-ia-project\"; node --check packages/server/index\\.js; node --check packages/server/lib/supabase\\.js$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^Set-Location \"c:/Proyectos/aira-ia-project\"; node --check packages/server/lib/gemini\\.js; node --check packages/server/index\\.js$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }

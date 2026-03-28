@@ -60,7 +60,29 @@ export default function Visualizer({ state = 'IDLE', volume = 0 }) {
     };
   }
 
-  const auraScale = state === 'SPEAKING' ? 1.22 + normalizedVolume * 0.34 : 1.12;
+  if (state === 'PROCESSING') {
+    animation = {
+      scale: [1.01, 1.04, 1.01],
+      rotate: [0, 3, 6, 3, 0],
+      filter: [
+        'saturate(1.12) brightness(1.06)',
+        'saturate(1.3) brightness(1.15)',
+        'saturate(1.12) brightness(1.06)',
+      ],
+      transition: {
+        duration: 0.9,
+        repeat: Infinity,
+        ease: 'linear',
+      },
+    };
+  }
+
+  const auraScale =
+    state === 'SPEAKING'
+      ? 1.22 + normalizedVolume * 0.34
+      : state === 'PROCESSING'
+        ? 1.18
+        : 1.12;
 
   return (
     <div className="visualizer-stage" role="img" aria-label={`Avatar de Aira en estado ${state}`}>
@@ -72,7 +94,11 @@ export default function Visualizer({ state = 'IDLE', volume = 0 }) {
         <motion.div
           className="aira-orb__aura"
           animate={{ scale: [1, auraScale, 1], opacity: [0.48, 0.74, 0.48] }}
-          transition={{ duration: state === 'SPEAKING' ? 0.5 : 2.8, repeat: Infinity, ease: 'easeInOut' }}
+          transition={{
+            duration: state === 'SPEAKING' ? 0.5 : state === 'PROCESSING' ? 1 : 2.8,
+            repeat: Infinity,
+            ease: 'easeInOut',
+          }}
         />
         <div className="aira-orb__core" />
         <div className="aira-orb__grain" />

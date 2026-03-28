@@ -80,6 +80,7 @@ export default function useVoiceSynthesis() {
       }
 
       synthesis.cancel();
+      setIsAiraSpeaking(true);
 
       const utterance = new SpeechSynthesisUtterance(normalizedText);
       utterance.voice = selectedVoice || null;
@@ -103,7 +104,13 @@ export default function useVoiceSynthesis() {
       };
 
       utteranceRef.current = utterance;
-      synthesis.speak(utterance);
+      try {
+        synthesis.speak(utterance);
+      } catch {
+        setIsAiraSpeaking(false);
+        utteranceRef.current = null;
+        return false;
+      }
       return true;
     },
     [selectedVoice]
