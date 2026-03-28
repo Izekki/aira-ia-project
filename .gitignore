@@ -137,3 +137,17 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+
+#MD PLANS
+PLAN_SPRINT1_SPEECH.md
+PLAN_SPRINT2_SPEECH.md
+PLAN_SPRINT3_VOICE.md
+PLAN_SPRINT4_BRAIN.md
+PLAN_SPRINT4.5_ESTABILIZACION.md
+PLAN_REPARACION2.md
+PLAN_SPRINT4.8.md
+PLAN_SPRINT5_UPDATES.md
+
+# GitHub metadata
+.github/

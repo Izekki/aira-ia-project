@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "npm install": true,
+        "npm --prefix packages/client": true,
+        "Get-NetTCPConnection": true,
+        "npm run build": true
+    }
+}
