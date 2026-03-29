@@ -25,12 +25,14 @@ export default function useSpeech(options = {}) {
   const speechLangRef = useRef(PRIMARY_SPEECH_LANG);
   const lastFinalSpeechKeyRef = useRef('');
   const lastFinalSpeechAtRef = useRef(0);
+  const processingBridgeTimeoutRef = useRef(null);
 
   const [isSupported, setIsSupported] = useState(true);
   const [isListening, setIsListening] = useState(false);
   const [interimTranscript, setInterimTranscript] = useState('');
   const [finalResult, setFinalResult] = useState(null);
   const [error, setError] = useState('');
+  const [isPttProcessingBridge, setIsPttProcessingBridge] = useState(false);
 
   useEffect(() => {
     isListeningRef.current = isListening;
@@ -43,6 +45,11 @@ export default function useSpeech(options = {}) {
   useEffect(() => {
     if (!enabled) {
       isPttActiveRef.current = false;
+      setIsPttProcessingBridge(false);
+
+      if (processingBridgeTimeoutRef.current) {
+        clearTimeout(processingBridgeTimeoutRef.current);
+      }
 
       if (recognitionRef.current) {
         try {
@@ -143,6 +150,11 @@ export default function useSpeech(options = {}) {
           return;
         }
 
+        if (processingBridgeTimeoutRef.current) {
+          clearTimeout(processingBridgeTimeoutRef.current);
+        }
+        setIsPttProcessingBridge(false);
+
         lastFinalSpeechKeyRef.current = speechKey;
         lastFinalSpeechAtRef.current = now;
         setFinalResult({
@@ -179,6 +191,7 @@ export default function useSpeech(options = {}) {
             : `Error de reconocimiento: ${event.error}`;
 
       setError(nextError);
+      setIsPttProcessingBridge(false);
     };
 
     recognition.onspeechend = () => {
@@ -201,6 +214,11 @@ export default function useSpeech(options = {}) {
     return () => {
       disposed = true;
       isPttActiveRef.current = false;
+      setIsPttProcessingBridge(false);
+
+      if (processingBridgeTimeoutRef.current) {
+        clearTimeout(processingBridgeTimeoutRef.current);
+      }
 
       if (recognitionRef.current) {
         recognitionRef.current.onstart = null;
@@ -228,8 +246,14 @@ export default function useSpeech(options = {}) {
     }
 
     isPttActiveRef.current = true;
+    setIsPttProcessingBridge(false);
     setInterimTranscript('');
     setError('');
+
+    // Hard-set runtime params before each capture to avoid stale recognizer config.
+    recognitionRef.current.lang = PRIMARY_SPEECH_LANG;
+    recognitionRef.current.interimResults = true;
+    recognitionRef.current.continuous = false;
 
     try {
       recognitionRef.current.start();
@@ -245,6 +269,16 @@ export default function useSpeech(options = {}) {
     }
 
     isPttActiveRef.current = false;
+    setIsPttProcessingBridge(true);
+
+    if (processingBridgeTimeoutRef.current) {
+      clearTimeout(processingBridgeTimeoutRef.current);
+    }
+
+    processingBridgeTimeoutRef.current = setTimeout(() => {
+      setIsPttProcessingBridge(false);
+    }, 1600);
+
     try {
       recognitionRef.current.stop();
     } catch {
@@ -258,6 +292,7 @@ export default function useSpeech(options = {}) {
     interimTranscript,
     finalResult,
     error,
+    isPttProcessingBridge,
     startPTT,
     stopPTT,
   };

@@ -69,6 +69,7 @@ export default function App() {
     interimTranscript,
     finalResult,
     error,
+    isPttProcessingBridge,
     startPTT,
     stopPTT,
   } =
@@ -203,13 +204,13 @@ export default function App() {
       return;
     }
 
-    if (isProcessing) {
+    if (isProcessing || isPttProcessingBridge) {
       setVisualizerState(VISUALIZER_STATE.PROCESSING);
       return;
     }
 
     setVisualizerState(VISUALIZER_STATE.IDLE);
-  }, [isListening, isAiraSpeaking, isProcessing]);
+  }, [isListening, isAiraSpeaking, isProcessing, isPttProcessingBridge]);
 
   useEffect(() => {
     function onVoiceEngineMissing() {
@@ -422,14 +423,14 @@ export default function App() {
         </div>
 
         <div className="status-row">
-          <span className={`status-dot ${isListening ? 'ok' : isProcessing ? 'processing' : 'off'}`} />
+          <span className={`status-dot ${isListening ? 'ok' : isProcessing || isPttProcessingBridge ? 'processing' : 'off'}`} />
           <span>
             {isSupported
               ? isFatalSpeechError
                 ? 'FATAL_ERROR'
                 : isListening
                   ? 'Escuchando microfono'
-                  : isProcessing
+                  : isProcessing || isPttProcessingBridge
                     ? 'Procesando consulta'
                   : !isWakeConfirmed
                     ? 'Pendiente de activacion'
