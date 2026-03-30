@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 const PRIMARY_SPEECH_LANG = 'es-MX';
 const FALLBACK_SPEECH_LANG = 'es-ES';
 const DUPLICATE_FINAL_WINDOW_MS = 6000;
+const AUTO_STOP_AFTER_FINAL_FALLBACK_MS = 700;
+const AUTO_STOP_SESSION_FALLBACK_MS = 18000;
 
 function normalizeSpeechKey(value) {
   return String(value || '')
@@ -16,7 +18,11 @@ function normalizeSpeechKey(value) {
 }
 
 export default function useSpeech(options = {}) {
-  const { enabled = true } = options;
+  const {
+    enabled = true,
+    wakeAutoStopAfterFinalMs = AUTO_STOP_AFTER_FINAL_FALLBACK_MS,
+    wakeMaxSessionMs = AUTO_STOP_SESSION_FALLBACK_MS,
+  } = options;
 
   const recognitionRef = useRef(null);
   const enabledRef = useRef(enabled);
@@ -27,6 +33,11 @@ export default function useSpeech(options = {}) {
   const lastFinalSpeechAtRef = useRef(0);
   const processingBridgeTimeoutRef = useRef(null);
   const restartRecognitionTimeoutRef = useRef(null);
+  const autoStopAfterFinalTimeoutRef = useRef(null);
+  const maxSessionTimeoutRef = useRef(null);
+  const pttAutoStopOnFinalRef = useRef(false);
+  const wakeAutoStopAfterFinalMsRef = useRef(wakeAutoStopAfterFinalMs);
+  const wakeMaxSessionMsRef = useRef(wakeMaxSessionMs);
 
   const [isSupported, setIsSupported] = useState(true);
   const [isListening, setIsListening] = useState(false);
@@ -44,8 +55,62 @@ export default function useSpeech(options = {}) {
   }, [enabled]);
 
   useEffect(() => {
+    const parsed = Number(wakeAutoStopAfterFinalMs);
+    wakeAutoStopAfterFinalMsRef.current = Number.isFinite(parsed)
+      ? Math.max(120, parsed)
+      : AUTO_STOP_AFTER_FINAL_FALLBACK_MS;
+  }, [wakeAutoStopAfterFinalMs]);
+
+  useEffect(() => {
+    const parsed = Number(wakeMaxSessionMs);
+    wakeMaxSessionMsRef.current = Number.isFinite(parsed)
+      ? Math.max(2000, parsed)
+      : AUTO_STOP_SESSION_FALLBACK_MS;
+  }, [wakeMaxSessionMs]);
+
+  const clearWakeAutoStopTimers = useCallback(() => {
+    if (autoStopAfterFinalTimeoutRef.current) {
+      clearTimeout(autoStopAfterFinalTimeoutRef.current);
+      autoStopAfterFinalTimeoutRef.current = null;
+    }
+
+    if (maxSessionTimeoutRef.current) {
+      clearTimeout(maxSessionTimeoutRef.current);
+      maxSessionTimeoutRef.current = null;
+    }
+  }, []);
+
+  const stopPttCapture = useCallback(() => {
+    isPttActiveRef.current = false;
+    pttAutoStopOnFinalRef.current = false;
+    setIsPttProcessingBridge(true);
+    clearWakeAutoStopTimers();
+
+    if (processingBridgeTimeoutRef.current) {
+      clearTimeout(processingBridgeTimeoutRef.current);
+    }
+
+    if (restartRecognitionTimeoutRef.current) {
+      clearTimeout(restartRecognitionTimeoutRef.current);
+      restartRecognitionTimeoutRef.current = null;
+    }
+
+    processingBridgeTimeoutRef.current = setTimeout(() => {
+      setIsPttProcessingBridge(false);
+    }, 1600);
+
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {
+        // Ignore stop errors when recognition is already stopped.
+      }
+    }
+  }, [clearWakeAutoStopTimers]);
+
+  useEffect(() => {
     if (!enabled) {
-      isPttActiveRef.current = false;
+      stopPttCapture();
       setIsPttProcessingBridge(false);
 
       if (processingBridgeTimeoutRef.current) {
@@ -54,14 +119,6 @@ export default function useSpeech(options = {}) {
       if (restartRecognitionTimeoutRef.current) {
         clearTimeout(restartRecognitionTimeoutRef.current);
         restartRecognitionTimeoutRef.current = null;
-      }
-
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch {
-          // Ignore stop errors while disabling speech.
-        }
       }
 
       setIsListening(false);
@@ -142,6 +199,11 @@ export default function useSpeech(options = {}) {
 
       setInterimTranscript(interim.trim());
 
+      if (interim.trim() && autoStopAfterFinalTimeoutRef.current) {
+        clearTimeout(autoStopAfterFinalTimeoutRef.current);
+        autoStopAfterFinalTimeoutRef.current = null;
+      }
+
       const normalizedFinal = finalText.trim();
       if (normalizedFinal) {
         const speechKey = normalizeSpeechKey(normalizedFinal);
@@ -167,6 +229,17 @@ export default function useSpeech(options = {}) {
           text: normalizedFinal,
         });
         setInterimTranscript('');
+
+        if (pttAutoStopOnFinalRef.current) {
+          if (autoStopAfterFinalTimeoutRef.current) {
+            clearTimeout(autoStopAfterFinalTimeoutRef.current);
+          }
+
+          autoStopAfterFinalTimeoutRef.current = setTimeout(() => {
+            autoStopAfterFinalTimeoutRef.current = null;
+            stopPttCapture();
+          }, wakeAutoStopAfterFinalMsRef.current);
+        }
       }
     };
 
@@ -196,6 +269,8 @@ export default function useSpeech(options = {}) {
             : `Error de reconocimiento: ${event.error}`;
 
       setError(nextError);
+      pttAutoStopOnFinalRef.current = false;
+      clearWakeAutoStopTimers();
       setIsPttProcessingBridge(false);
     };
 
@@ -236,8 +311,9 @@ export default function useSpeech(options = {}) {
 
     return () => {
       disposed = true;
-      isPttActiveRef.current = false;
+      pttAutoStopOnFinalRef.current = false;
       setIsPttProcessingBridge(false);
+      clearWakeAutoStopTimers();
 
       if (processingBridgeTimeoutRef.current) {
         clearTimeout(processingBridgeTimeoutRef.current);
@@ -265,15 +341,38 @@ export default function useSpeech(options = {}) {
 
       recognitionRef.current = null;
     };
-  }, [enabled]);
+  }, [enabled, clearWakeAutoStopTimers, stopPttCapture]);
 
-  const startPTT = useCallback(() => {
+  const startPTT = useCallback((startOptions = {}) => {
     if (!enabledRef.current || !recognitionRef.current) {
       return false;
     }
 
+    const autoStopOnFinal = Boolean(startOptions?.autoStopOnFinal);
+    const autoStopDelay = Number(startOptions?.autoStopAfterFinalMs);
+    const maxSessionMs = Number(startOptions?.maxSessionMs);
+
     // Reset state for fresh capture
     isPttActiveRef.current = true;
+    pttAutoStopOnFinalRef.current = autoStopOnFinal;
+    clearWakeAutoStopTimers();
+
+    wakeAutoStopAfterFinalMsRef.current = Number.isFinite(autoStopDelay)
+      ? Math.max(120, autoStopDelay)
+      : wakeAutoStopAfterFinalMsRef.current;
+
+    if (autoStopOnFinal || Number.isFinite(maxSessionMs)) {
+      const effectiveMaxSessionMs = Number.isFinite(maxSessionMs)
+        ? Math.max(2000, maxSessionMs)
+        : wakeMaxSessionMsRef.current;
+
+      maxSessionTimeoutRef.current = setTimeout(() => {
+        if (isPttActiveRef.current) {
+          stopPttCapture();
+        }
+      }, effectiveMaxSessionMs);
+    }
+
     setIsPttProcessingBridge(false);
     setInterimTranscript('');
     setFinalResult(null);
@@ -323,34 +422,11 @@ export default function useSpeech(options = {}) {
       }, 120);
       return true;
     }
-  }, []);
+  }, [clearWakeAutoStopTimers, stopPttCapture]);
 
   const stopPTT = useCallback(() => {
-    if (!recognitionRef.current) {
-      return;
-    }
-
-    isPttActiveRef.current = false;
-    setIsPttProcessingBridge(true);
-
-    if (processingBridgeTimeoutRef.current) {
-      clearTimeout(processingBridgeTimeoutRef.current);
-    }
-    if (restartRecognitionTimeoutRef.current) {
-      clearTimeout(restartRecognitionTimeoutRef.current);
-      restartRecognitionTimeoutRef.current = null;
-    }
-
-    processingBridgeTimeoutRef.current = setTimeout(() => {
-      setIsPttProcessingBridge(false);
-    }, 1600);
-
-    try {
-      recognitionRef.current.stop();
-    } catch {
-      // Ignore stop errors when recognition is already stopped.
-    }
-  }, []);
+    stopPttCapture();
+  }, [stopPttCapture]);
 
   return {
     isSupported,

@@ -48,6 +48,21 @@ const ENV_SOCKET_PORT =
     ? Number(process.env.SOCKET_PORT)
     : NaN;
 
+const ENV_STT_MODE =
+  typeof process !== 'undefined' && process?.env?.AIRA_STT_MODE
+    ? String(process.env.AIRA_STT_MODE).trim().toLowerCase()
+    : '';
+
+const ENV_TTS_MODE =
+  typeof process !== 'undefined' && process?.env?.AIRA_TTS_MODE
+    ? String(process.env.AIRA_TTS_MODE).trim().toLowerCase()
+    : '';
+
+const ENV_VOICE_BACKEND_URL =
+  typeof process !== 'undefined' && process?.env?.VOICE_BACKEND_URL
+    ? String(process.env.VOICE_BACKEND_URL).trim()
+    : '';
+
 const WAKE_WORDS_CONFIG = {
   // Array de palabras o frases de activación
   // ⚠️  PRINCIPAL: Cambia aquí si quieres usar "heyaira" en vez de "aira"
@@ -107,7 +122,7 @@ const CONFIDENCE_THRESHOLDS = {
   // Cliente (navegador con Web Speech API)
   // ⚠️  AJUSTA AQUÍ: Si la detección en el navegador es muy sensible o poco sensible
   client: {
-    minConfidence: 0.1, // Usuario debe hablar claro o el sistema no reacciona
+    minConfidence: 0.18, // Balance recomendado para reducir falsos positivos sin perder sensibilidad
   },
 
   // Servidor (modelos ONNX locales)
@@ -117,14 +132,14 @@ const CONFIDENCE_THRESHOLDS = {
     // Cambia con env var: WAKE_WORD_THRESHOLD
     wakeWordThreshold: Number.isFinite(ENV_WAKE_WORD_THRESHOLD)
       ? ENV_WAKE_WORD_THRESHOLD
-      : 0.1,
+      : 0.18,
 
     // Umbral del detector de actividad de voz (VAD - Voice Activity Detection)
     // Si es muy alto: puede no detectar voces suaves
     // Si es muy bajo: puede detectar ruido como voz
     vadThreshold: Number.isFinite(ENV_WAKE_WORD_VAD_THRESHOLD)
       ? ENV_WAKE_WORD_VAD_THRESHOLD
-      : 0.5,
+      : 0.45,
 
     // Umbral para logística/smoothing de detecciones
     logisticThreshold: 0.5,
@@ -176,8 +191,15 @@ const TIMING_CONFIG = {
   // ⚠️  AJUSTA AQUÍ: Si quieres que espere más (ej: 2000) o menos (ej: 1000)
   // Recomendado: 1400-1500 ms
   detectionCooldownMs: {
-    client: 1500, // Navegador
-    server: 1400, // Servidor (Electron)
+    client: 1700, // Navegador
+    server: 1600, // Servidor (Electron)
+  },
+
+  // Parametros para flujo manos libres: activa microfono con wake word y
+  // corta automaticamente al detectar fin de frase (silencio) con timeout de respaldo.
+  speechCapture: {
+    wakeAutoStopAfterFinalMs: 700,
+    wakeMaxSessionMs: 18000,
   },
 
   // Tiempo antes de reintentar si hay error
@@ -243,6 +265,43 @@ const DEBUG_CONFIG = {
 
 /**
  * ============================================================================
+ * 8. CONFIGURACIÓN DE RUNTIME DE VOZ (MIGRACIÓN STT/TTS)
+ * ============================================================================
+ *
+ * Objetivo: preparar el proyecto para migrar STT/TTS al backend con streaming,
+ * manteniendo fallback en navegador durante la transición.
+ */
+const VOICE_RUNTIME_CONFIG = {
+  migration: {
+    phase: 'prep',
+    enableBackendStreamingProtocol: false,
+    allowBrowserFallback: true,
+  },
+
+  stt: {
+    // browser | backend
+    mode: ENV_STT_MODE === 'backend' ? 'backend' : 'browser',
+    backendProvider: 'faster-whisper',
+    backendTransport: 'socket.io',
+    // Endpoint futuro para sesión de voz en streaming (no implementado aún)
+    backendSessionEvent: 'VOICE_SESSION_START',
+  },
+
+  tts: {
+    // browser | backend
+    mode: ENV_TTS_MODE === 'backend' ? 'backend' : 'browser',
+    backendProvider: 'kokoro|vibevoice',
+    backendTransport: 'socket.io',
+    backendChunkEvent: 'TTS_AUDIO_CHUNK',
+  },
+
+  network: {
+    backendUrl: ENV_VOICE_BACKEND_URL || null,
+  },
+};
+
+/**
+ * ============================================================================
  * FUNCIONES HELPER
  * ============================================================================
  */
@@ -287,9 +346,36 @@ function getClientConfig() {
     language: WAKE_WORDS_CONFIG.client.language,
     minConfidence: CONFIDENCE_THRESHOLDS.client.minConfidence,
     cooldownMs: TIMING_CONFIG.detectionCooldownMs.client,
+    wakeAutoStopAfterFinalMs: TIMING_CONFIG.speechCapture.wakeAutoStopAfterFinalMs,
+    wakeMaxSessionMs: TIMING_CONFIG.speechCapture.wakeMaxSessionMs,
+    sttMode: VOICE_RUNTIME_CONFIG.stt.mode,
+    ttsMode: VOICE_RUNTIME_CONFIG.tts.mode,
+    browserFallbackEnabled: VOICE_RUNTIME_CONFIG.migration.allowBrowserFallback,
+    backendStreamingEnabled: VOICE_RUNTIME_CONFIG.migration.enableBackendStreamingProtocol,
     socketHost,
     socketPort,
     socketUrl: `http://${socketHost}:${socketPort}`,
+  };
+}
+
+/**
+ * Configuración de runtime de voz para orquestación server/client.
+ * @returns {object}
+ */
+function getVoiceRuntimeConfig() {
+  return {
+    migration: {
+      ...VOICE_RUNTIME_CONFIG.migration,
+    },
+    stt: {
+      ...VOICE_RUNTIME_CONFIG.stt,
+    },
+    tts: {
+      ...VOICE_RUNTIME_CONFIG.tts,
+    },
+    network: {
+      ...VOICE_RUNTIME_CONFIG.network,
+    },
   };
 }
 
@@ -306,9 +392,11 @@ if (typeof module !== 'undefined' && module.exports) {
     NETWORK_CONFIG,
     MODEL_LABELS,
     DEBUG_CONFIG,
+    VOICE_RUNTIME_CONFIG,
     getModelLabel,
     getServerConfig,
     getClientConfig,
+    getVoiceRuntimeConfig,
   };
 } else {
   // Entorno navegador
@@ -320,7 +408,9 @@ if (typeof module !== 'undefined' && module.exports) {
     NETWORK_CONFIG,
     MODEL_LABELS,
     DEBUG_CONFIG,
+    VOICE_RUNTIME_CONFIG,
     getModelLabel,
     getClientConfig,
+    getVoiceRuntimeConfig,
   };
 }

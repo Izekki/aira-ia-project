@@ -3,10 +3,11 @@ import { io } from 'socket.io-client';
 import useSpeech from './hooks/useSpeech';
 import useVoiceSynthesis from './hooks/useVoiceSynthesis';
 import Visualizer from './components/Visualizer';
+import WakeActivationOverlay from './components/WakeActivationOverlay';
+import { normalizeSpeechKey } from './lib/textNormalization';
+import { buildInterruptPayload, buildUserInputPayload } from './lib/wsProtocol';
+import { FALLBACK_SOCKET_SERVER_URL, resolveVoiceClientConfig } from './lib/voiceClientConfig';
 
-const FALLBACK_SOCKET_SERVER_URL = 'http://127.0.0.1:4000';
-const WS_PROTOCOL_NAME = 'aira-ws';
-const WS_PROTOCOL_VERSION = '1.0.0';
 const VOICE_ENGINE_MISSING_MESSAGE =
   'Usa un navegador basado en Chromium (Chrome/Edge) con servicios de Google activos';
 const VISUALIZER_STATE = {
@@ -19,19 +20,7 @@ const VISUALIZER_STATE = {
 const DEFAULT_SPEECH_PROFILE = 'stable';
 const DUPLICATE_EMIT_WINDOW_MS = 7000;
 const VOICE_CONFIG_RELOAD_INTERVAL_MS = 2000;
-const WAKEWORD_AUTO_STOP_MS = 5200;
 const WAKEWORD_BOOTSTRAP_DELAY_MS = 260;
-
-function normalizeSpeechKey(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^\p{L}\p{N}\s]/gu, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 function resolveSpeechProfile() {
   const runtimeProfile =
@@ -44,64 +33,6 @@ function resolveSpeechProfile() {
     : DEFAULT_SPEECH_PROFILE;
 }
 
-function clampThreshold(value, fallback = 0.2) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-
-  return Math.max(0, Math.min(1, parsed));
-}
-
-function normalizeWakeWords(words) {
-  if (!Array.isArray(words)) {
-    return ['aira'];
-  }
-
-  const normalized = words
-    .map((word) => String(word || '').trim().toLowerCase())
-    .filter(Boolean);
-
-  return normalized.length > 0 ? normalized : ['aira'];
-}
-
-function resolveVoiceClientConfig() {
-  if (typeof window === 'undefined' || !window.VOICE_DETECTION_CONFIG) {
-    return {
-      wakeWords: ['hey aira', 'heyaira'],
-      wakeWordThreshold: 0.2,
-      wakeWordLanguage: 'es-MX',
-      wakeWordCooldownMs: 1500,
-      serverWakeWordThreshold: 0.1,
-      socketUrl: FALLBACK_SOCKET_SERVER_URL,
-    };
-  }
-
-  const cfg = window.VOICE_DETECTION_CONFIG;
-  const clientConfig = cfg?.getClientConfig?.() || {};
-  const socketHost = String(clientConfig.socketHost || cfg?.NETWORK_CONFIG?.socket?.host || '127.0.0.1');
-  const socketPort = Number(clientConfig.socketPort || cfg?.NETWORK_CONFIG?.socket?.port || 4000);
-  const socketUrl =
-    String(clientConfig.socketUrl || '').trim() ||
-    `http://${socketHost}:${Number.isFinite(socketPort) ? socketPort : 4000}`;
-
-  return {
-    wakeWords: normalizeWakeWords(clientConfig.wakeWords || cfg?.WAKE_WORDS_CONFIG?.client?.default),
-    wakeWordThreshold: clampThreshold(cfg?.CONFIDENCE_THRESHOLDS?.client?.minConfidence, 0.2),
-    wakeWordLanguage: String(clientConfig.language || cfg?.WAKE_WORDS_CONFIG?.client?.language || 'es-MX'),
-    wakeWordCooldownMs: Math.max(
-      0,
-      Number(clientConfig.cooldownMs || cfg?.TIMING_CONFIG?.detectionCooldownMs?.client || 1500)
-    ),
-    serverWakeWordThreshold: clampThreshold(cfg?.CONFIDENCE_THRESHOLDS?.server?.wakeWordThreshold, 0.1),
-    socketUrl,
-  };
-}
-
-function buildClientMessageId(source) {
-  const randomChunk = Math.random().toString(36).slice(2, 8);
-  return `${source}-${Date.now()}-${randomChunk}`;
-}
 
 export default function App() {
   const socketRef = useRef(null);
@@ -109,14 +40,21 @@ export default function App() {
   const speechProfile = resolveSpeechProfile();
   const [voiceClientConfig, setVoiceClientConfig] = useState(() => resolveVoiceClientConfig());
   const wakeWords = voiceClientConfig.wakeWords;
+  const wakeAutoStopAfterFinalMs = voiceClientConfig.wakeAutoStopAfterFinalMs;
+  const wakeMaxSessionMs = voiceClientConfig.wakeMaxSessionMs;
+  const sttMode = voiceClientConfig.sttMode;
+  const ttsMode = voiceClientConfig.ttsMode;
+  const browserFallbackEnabled = voiceClientConfig.browserFallbackEnabled;
+  const backendStreamingEnabled = voiceClientConfig.backendStreamingEnabled;
   const serverWakeWordThreshold = voiceClientConfig.serverWakeWordThreshold;
   const socketServerUrl = voiceClientConfig.socketUrl || FALLBACK_SOCKET_SERVER_URL;
   const wakeWordsRef = useRef(wakeWords);
+  const wakeAutoStopAfterFinalMsRef = useRef(wakeAutoStopAfterFinalMs);
+  const wakeMaxSessionMsRef = useRef(wakeMaxSessionMs);
   const isWakeConfirmedRef = useRef(false);
   const activePttKeyRef = useRef('');
   const processingCountRef = useRef(0);
   const isAiraSpeakingRef = useRef(false);
-  const wakeAutoStopTimeoutRef = useRef(null);
 
   const [isConnected, setIsConnected] = useState(false);
   const [serverTime, setServerTime] = useState('---');
@@ -160,6 +98,8 @@ export default function App() {
     useSpeech({
       enabled: isWakeConfirmed && isSpeechBootReady,
       profile: speechProfile,
+      wakeAutoStopAfterFinalMs,
+      wakeMaxSessionMs,
     });
 
   const wakeWordModeLabel = wakeRuntime.mode || 'server/openWakeWord';
@@ -201,20 +141,16 @@ export default function App() {
     }
 
     increaseProcessing();
-    socketRef.current?.emit('USER_INPUT', {
-      content: normalizedSpeechText,
-      clientMessageId: buildClientMessageId(source),
-      fingerprint: `${source}:${normalizedSpeechKey}`,
-      timestamp: now,
-      protocol: {
-        name: WS_PROTOCOL_NAME,
-        version: WS_PROTOCOL_VERSION,
-      },
-      metadata: {
+    socketRef.current?.emit(
+      'USER_INPUT',
+      buildUserInputPayload({
+        content: normalizedSpeechText,
         source,
-        interrupt_active_tts: isAiraSpeakingRef.current,
-      },
-    });
+        interruptActiveTts: isAiraSpeakingRef.current,
+        timestamp: now,
+        fingerprint: `${source}:${normalizedSpeechKey}`,
+      })
+    );
 
     return true;
   }
@@ -222,7 +158,11 @@ export default function App() {
   function handleServerWakeWordDetected(payload = {}) {
     function startWakePtt() {
       setIsPttPressed(true);
-      const started = startPTT();
+      const started = startPTT({
+        autoStopOnFinal: true,
+        autoStopAfterFinalMs: wakeAutoStopAfterFinalMsRef.current,
+        maxSessionMs: wakeMaxSessionMsRef.current,
+      });
       if (!started) {
         setIsPttPressed(false);
         setMessages((prev) => {
@@ -234,15 +174,6 @@ export default function App() {
         });
         return false;
       }
-
-      if (wakeAutoStopTimeoutRef.current) {
-        clearTimeout(wakeAutoStopTimeoutRef.current);
-      }
-
-      wakeAutoStopTimeoutRef.current = setTimeout(() => {
-        setIsPttPressed(false);
-        stopPTT();
-      }, WAKEWORD_AUTO_STOP_MS);
 
       return true;
     }
@@ -305,6 +236,10 @@ export default function App() {
         const sameServerThreshold =
           prev.serverWakeWordThreshold === nextConfig.serverWakeWordThreshold;
         const sameSocketUrl = prev.socketUrl === nextConfig.socketUrl;
+        const sameSttMode = prev.sttMode === nextConfig.sttMode;
+        const sameTtsMode = prev.ttsMode === nextConfig.ttsMode;
+        const sameFallback = prev.browserFallbackEnabled === nextConfig.browserFallbackEnabled;
+        const sameBackendStreaming = prev.backendStreamingEnabled === nextConfig.backendStreamingEnabled;
 
         if (
           sameWakeWords &&
@@ -312,7 +247,11 @@ export default function App() {
           sameLanguage &&
           sameCooldown &&
           sameServerThreshold &&
-          sameSocketUrl
+          sameSocketUrl &&
+          sameSttMode &&
+          sameTtsMode &&
+          sameFallback &&
+          sameBackendStreaming
         ) {
           return prev;
         }
@@ -424,6 +363,14 @@ export default function App() {
   }, [wakeWords]);
 
   useEffect(() => {
+    wakeAutoStopAfterFinalMsRef.current = wakeAutoStopAfterFinalMs;
+  }, [wakeAutoStopAfterFinalMs]);
+
+  useEffect(() => {
+    wakeMaxSessionMsRef.current = wakeMaxSessionMs;
+  }, [wakeMaxSessionMs]);
+
+  useEffect(() => {
     isWakeConfirmedRef.current = isWakeConfirmed;
   }, [isWakeConfirmed]);
 
@@ -431,15 +378,6 @@ export default function App() {
     speakRef.current = speak;
     cancelRef.current = cancel;
   }, [speak, cancel]);
-
-  useEffect(() => {
-    return () => {
-      if (wakeAutoStopTimeoutRef.current) {
-        clearTimeout(wakeAutoStopTimeoutRef.current);
-        wakeAutoStopTimeoutRef.current = null;
-      }
-    };
-  }, []);
 
   useEffect(() => {
     if (socketRef.current && socketRef.current.io?.uri !== socketServerUrl) {
@@ -478,10 +416,6 @@ export default function App() {
       if (processingTimeoutRef.current) {
         clearTimeout(processingTimeoutRef.current);
         processingTimeoutRef.current = null;
-      }
-      if (wakeAutoStopTimeoutRef.current) {
-        clearTimeout(wakeAutoStopTimeoutRef.current);
-        wakeAutoStopTimeoutRef.current = null;
       }
     }
 
@@ -706,20 +640,16 @@ export default function App() {
 
     const normalizedKey = normalizeSpeechKey(text);
     increaseProcessing();
-    socketRef.current?.emit('USER_INPUT', {
-      content: text,
-      clientMessageId: buildClientMessageId('keyboard'),
-      fingerprint: `keyboard:${normalizedKey}`,
-      timestamp: now,
-      protocol: {
-        name: WS_PROTOCOL_NAME,
-        version: WS_PROTOCOL_VERSION,
-      },
-      metadata: {
+    socketRef.current?.emit(
+      'USER_INPUT',
+      buildUserInputPayload({
+        content: text,
         source: 'keyboard',
-        interrupt_active_tts: isAiraSpeakingRef.current,
-      },
-    });
+        interruptActiveTts: isAiraSpeakingRef.current,
+        timestamp: now,
+        fingerprint: `keyboard:${normalizedKey}`,
+      })
+    );
   }
 
   function handleInputKeyDown(event) {
@@ -749,20 +679,7 @@ export default function App() {
         return;
       }
 
-      socketRef.current.emit('USER_INPUT', {
-        content: '',
-        clientMessageId: buildClientMessageId(source),
-        fingerprint: `interrupt:${source}:${Date.now()}`,
-        timestamp: Date.now(),
-        protocol: {
-          name: WS_PROTOCOL_NAME,
-          version: WS_PROTOCOL_VERSION,
-        },
-        metadata: {
-          source,
-          interrupt_active_tts: true,
-        },
-      });
+      socketRef.current.emit('USER_INPUT', buildInterruptPayload(source));
     }
 
     function onKeyDown(event) {
@@ -874,6 +791,10 @@ export default function App() {
         <p className="server-time">Modo wake word activo: {wakeWordModeLabel}</p>
         <p className="server-time">Modelo wake word backend: {wakeRuntime.modelName || 'heyaira.onnx'}</p>
         <p className="server-time">Umbral wake word backend: {wakeThresholdForUi.toFixed(2)}</p>
+        <p className="server-time">STT runtime (migracion): {String(sttMode || 'browser')}</p>
+        <p className="server-time">TTS runtime (migracion): {String(ttsMode || 'browser')}</p>
+        <p className="server-time">Streaming backend habilitado: {backendStreamingEnabled ? 'si' : 'no'}</p>
+        <p className="server-time">Fallback navegador habilitado: {browserFallbackEnabled ? 'si' : 'no'}</p>
         {error && <p className="speech-error">{error}</p>}
         {wakeError && <p className="speech-error">{wakeError}</p>}
         {lastWakeWord && (
@@ -971,19 +892,7 @@ export default function App() {
         </p>
       </section>
 
-      {!isWakeConfirmed && (
-        <div className="wake-overlay" role="dialog" aria-modal="true">
-          <div className="wake-card">
-            <h2>Activar Aira</h2>
-            <p>
-              Haz clic para habilitar microfono y canal de voz.
-            </p>
-            <button type="button" onClick={handleWakeActivation}>
-              Hacer clic para activar a Aira
-            </button>
-          </div>
-        </div>
-      )}
+      {!isWakeConfirmed && <WakeActivationOverlay onActivate={handleWakeActivation} />}
     </main>
   );
 }
