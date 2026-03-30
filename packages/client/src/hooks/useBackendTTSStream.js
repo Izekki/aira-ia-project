@@ -1,0 +1,276 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+const DEFAULT_LANG = 'es-MX';
+const DEFAULT_PRESET = 'balanced';
+
+function createRequestId() {
+  const randomChunk = Math.random().toString(36).slice(2, 8);
+  return `tts-${Date.now()}-${randomChunk}`;
+}
+
+function decodeBase64Chunk(chunkBase64) {
+  const normalizedChunk = String(chunkBase64 || '').trim();
+  if (!normalizedChunk) {
+    return null;
+  }
+
+  const payload = normalizedChunk.replace(/^data:[^;]+;base64,/i, '');
+  try {
+    const binary = window.atob(payload);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+export default function useBackendTTSStream({ socket }) {
+  const [isAiraSpeaking, setIsAiraSpeaking] = useState(false);
+
+  const activeRequestIdRef = useRef('');
+  const requestStoreRef = useRef(new Map());
+  const audioRef = useRef(null);
+  const objectUrlRef = useRef('');
+
+  const stopPlayback = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = '';
+      audioRef.current = null;
+    }
+
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = '';
+    }
+  }, []);
+
+  const clearRequest = useCallback((requestId) => {
+    if (!requestId) {
+      return;
+    }
+
+    requestStoreRef.current.delete(requestId);
+    if (activeRequestIdRef.current === requestId) {
+      activeRequestIdRef.current = '';
+    }
+  }, []);
+
+  const playBufferedRequest = useCallback((requestId) => {
+    const state = requestStoreRef.current.get(requestId);
+    if (!state || state.chunks.length === 0) {
+      clearRequest(requestId);
+      setIsAiraSpeaking(false);
+      return;
+    }
+
+    stopPlayback();
+
+    const audioBlob = new Blob(state.chunks, {
+      type: state.mime || 'audio/wav',
+    });
+    const objectUrl = URL.createObjectURL(audioBlob);
+    objectUrlRef.current = objectUrl;
+
+    const audio = new Audio(objectUrl);
+    audioRef.current = audio;
+
+    audio.onended = () => {
+      stopPlayback();
+      clearRequest(requestId);
+      setIsAiraSpeaking(false);
+    };
+
+    audio.onerror = () => {
+      stopPlayback();
+      clearRequest(requestId);
+      setIsAiraSpeaking(false);
+    };
+
+    void audio.play().catch(() => {
+      stopPlayback();
+      clearRequest(requestId);
+      setIsAiraSpeaking(false);
+    });
+  }, [clearRequest, stopPlayback]);
+
+  // Preparado para Paso B: cuando se confirme el formato final del backend,
+  // esta función es el punto de extensión para cola de reproducción WebAudio.
+  const queueRealtimeChunk = useCallback(() => {
+    return false;
+  }, []);
+
+  const cancel = useCallback((options = {}) => {
+    const requestId = String(options.requestId || activeRequestIdRef.current || '').trim();
+    const reason = String(options.reason || 'user').trim() || 'user';
+    const notifyServer = options.notifyServer !== false;
+
+    if (notifyServer && socket && requestId) {
+      socket.emit('TTS_CANCEL', {
+        requestId,
+        reason,
+      });
+    }
+
+    stopPlayback();
+
+    if (requestId) {
+      clearRequest(requestId);
+    } else {
+      requestStoreRef.current.clear();
+      activeRequestIdRef.current = '';
+    }
+
+    setIsAiraSpeaking(false);
+  }, [clearRequest, socket, stopPlayback]);
+
+  const speak = useCallback((text, options = {}) => {
+    const normalizedText = String(text || '').trim();
+    if (!normalizedText || !socket) {
+      return false;
+    }
+
+    const requestId = String(options.requestId || createRequestId()).trim();
+    if (!requestId) {
+      return false;
+    }
+
+    if (activeRequestIdRef.current) {
+      cancel({
+        requestId: activeRequestIdRef.current,
+        reason: 'new_request',
+      });
+    }
+
+    requestStoreRef.current.set(requestId, {
+      chunks: [],
+      mime: 'audio/wav',
+      sampleRate: 24000,
+      startedAt: Date.now(),
+      firstChunkAt: 0,
+    });
+    activeRequestIdRef.current = requestId;
+    setIsAiraSpeaking(true);
+
+    socket.emit('TTS_REQUEST', {
+      requestId,
+      text: normalizedText,
+      lang: String(options.lang || DEFAULT_LANG),
+      preset: String(options.preset || DEFAULT_PRESET),
+      metadata: options.metadata || {},
+    });
+
+    return true;
+  }, [cancel, socket]);
+
+  useEffect(() => {
+    if (!socket) {
+      return undefined;
+    }
+
+    function onAudioChunk(payload = {}) {
+      const requestId = String(payload?.requestId || '').trim();
+      if (!requestId) {
+        return;
+      }
+
+      const chunk = decodeBase64Chunk(payload?.chunkBase64);
+      if (!chunk) {
+        return;
+      }
+
+      let requestState = requestStoreRef.current.get(requestId);
+      if (!requestState) {
+        requestState = {
+          chunks: [],
+          mime: 'audio/wav',
+          sampleRate: 24000,
+          startedAt: Date.now(),
+          firstChunkAt: 0,
+        };
+        requestStoreRef.current.set(requestId, requestState);
+      }
+
+      if (!requestState.firstChunkAt) {
+        requestState.firstChunkAt = Date.now();
+      }
+
+      requestState.mime = String(payload?.mime || requestState.mime || 'audio/wav');
+      requestState.sampleRate = Number.isFinite(Number(payload?.sampleRate))
+        ? Number(payload.sampleRate)
+        : requestState.sampleRate;
+
+      const streamed = queueRealtimeChunk({
+        requestId,
+        chunk,
+        mime: requestState.mime,
+        sampleRate: requestState.sampleRate,
+      });
+
+      if (!streamed) {
+        requestState.chunks.push(chunk);
+      }
+    }
+
+    function onTtsDone(payload = {}) {
+      const requestId = String(payload?.requestId || activeRequestIdRef.current || '').trim();
+      if (!requestId) {
+        return;
+      }
+
+      const reason = String(payload?.reason || 'eos').trim().toLowerCase() || 'eos';
+      if (reason !== 'eos') {
+        clearRequest(requestId);
+        stopPlayback();
+        setIsAiraSpeaking(false);
+        return;
+      }
+
+      playBufferedRequest(requestId);
+    }
+
+    function onStopTts() {
+      cancel({
+        reason: 'interrupt',
+        notifyServer: false,
+      });
+    }
+
+    function onSocketDisconnect() {
+      cancel({
+        reason: 'disconnect',
+        notifyServer: false,
+      });
+    }
+
+    socket.on('TTS_AUDIO_CHUNK', onAudioChunk);
+    socket.on('TTS_DONE', onTtsDone);
+    socket.on('STOP_TTS', onStopTts);
+    socket.on('disconnect', onSocketDisconnect);
+
+    return () => {
+      socket.off('TTS_AUDIO_CHUNK', onAudioChunk);
+      socket.off('TTS_DONE', onTtsDone);
+      socket.off('STOP_TTS', onStopTts);
+      socket.off('disconnect', onSocketDisconnect);
+    };
+  }, [cancel, clearRequest, playBufferedRequest, queueRealtimeChunk, socket, stopPlayback]);
+
+  useEffect(() => {
+    return () => {
+      stopPlayback();
+      requestStoreRef.current.clear();
+      activeRequestIdRef.current = '';
+    };
+  }, [stopPlayback]);
+
+  return {
+    speak,
+    cancel,
+    isAiraSpeaking,
+    activeRequestId: activeRequestIdRef.current,
+  };
+}

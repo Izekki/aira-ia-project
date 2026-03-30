@@ -32,8 +32,10 @@ export function resolveVoiceClientConfig() {
       wakeMaxSessionMs: 18000,
       sttMode: 'browser',
       ttsMode: 'browser',
+      ttsProvider: 'vibevoice-realtime',
       browserFallbackEnabled: true,
       backendStreamingEnabled: false,
+      vibevWsUrl: 'ws://127.0.0.1:10001',
       serverWakeWordThreshold: 0.1,
       socketUrl: FALLBACK_SOCKET_SERVER_URL,
     };
@@ -65,12 +67,16 @@ export function resolveVoiceClientConfig() {
     ),
     sttMode: String(clientConfig.sttMode || cfg?.VOICE_RUNTIME_CONFIG?.stt?.mode || 'browser'),
     ttsMode: String(clientConfig.ttsMode || cfg?.VOICE_RUNTIME_CONFIG?.tts?.mode || 'browser'),
+    ttsProvider: String(
+      clientConfig.ttsProvider || cfg?.VOICE_RUNTIME_CONFIG?.tts?.backendProvider || 'vibevoice-realtime'
+    ),
     browserFallbackEnabled: Boolean(
       clientConfig.browserFallbackEnabled ?? cfg?.VOICE_RUNTIME_CONFIG?.migration?.allowBrowserFallback ?? true
     ),
     backendStreamingEnabled: Boolean(
       clientConfig.backendStreamingEnabled ?? cfg?.VOICE_RUNTIME_CONFIG?.migration?.enableBackendStreamingProtocol ?? false
     ),
+    vibevWsUrl: String(clientConfig.vibevWsUrl || cfg?.VOICE_RUNTIME_CONFIG?.network?.vibevWsUrl || ''),
     serverWakeWordThreshold: clampThreshold(cfg?.CONFIDENCE_THRESHOLDS?.server?.wakeWordThreshold, 0.1),
     socketUrl,
   };

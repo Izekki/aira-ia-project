@@ -7,6 +7,7 @@
     "config:watch": "node scripts/sync-voice-config-watch.js",
     "client": "set \"BROWSER=msedge\" && npm start --prefix packages/client",
     "server": "node packages/server/index.js",
+    "mock:vibev": "node scripts/mock-vibev-ws.js",
     "dev": "concurrently \"npm run config:watch\" \"npm run server\" \"npm run client\"",
     "build:client": "npm run build --prefix packages/client"
   },
@@ -32,6 +33,7 @@
     "dotenv": "^17.3.1",
     "onnxruntime-node": "^1.24.3",
     "openai": "^6.33.0",
-    "socket.io": "^4.8.3"
+    "socket.io": "^4.8.3",
+    "ws": "^8.20.0"
   }
 }

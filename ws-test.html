@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<body>
+<script>
+  const text = encodeURIComponent("Hola, esto es una prueba");
+  const voice = encodeURIComponent("sp-Spk1_man");
+  const url = `ws://127.0.0.1:3000/stream?text=${encodeURIComponent("Hello")}&voice=${encodeURIComponent("en-Carter_man")}&cfg=1.5`;
+  const ws = new WebSocket(url);
+
+  ws.onopen = () => console.log("WS open", url);
+  ws.onmessage = (ev) => console.log("WS msg", typeof ev.data, ev.data);
+  ws.onerror = (e) => console.log("WS error", e);
+  ws.onclose = () => console.log("WS close");
+</script>
+</body>
+</html>

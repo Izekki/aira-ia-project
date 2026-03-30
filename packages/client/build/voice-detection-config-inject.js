@@ -63,6 +63,21 @@ const ENV_VOICE_BACKEND_URL =
     ? String(process.env.VOICE_BACKEND_URL).trim()
     : '';
 
+const ENV_VOICE_TTS_PROVIDER =
+  typeof process !== 'undefined' && process?.env?.VOICE_TTS_PROVIDER
+    ? String(process.env.VOICE_TTS_PROVIDER).trim().toLowerCase()
+    : '';
+
+const ENV_VIBEV_WS_URL =
+  typeof process !== 'undefined' && process?.env?.VIBEV_WS_URL
+    ? String(process.env.VIBEV_WS_URL).trim()
+    : '';
+
+const ENV_VOICE_TTS_STREAMING =
+  typeof process !== 'undefined' && process?.env?.VOICE_TTS_STREAMING
+    ? String(process.env.VOICE_TTS_STREAMING).trim().toLowerCase()
+    : '';
+
 const WAKE_WORDS_CONFIG = {
   // Array de palabras o frases de activación
   // ⚠️  PRINCIPAL: Cambia aquí si quieres usar "heyaira" en vez de "aira"
@@ -263,6 +278,15 @@ const DEBUG_CONFIG = {
   enableAudioLogs: false,
 };
 
+function parseEnvBoolean(rawValue, fallback = false) {
+  const normalized = String(rawValue || '').trim().toLowerCase();
+  if (!normalized) {
+    return fallback;
+  }
+
+  return ['1', 'true', 'yes', 'on'].includes(normalized);
+}
+
 /**
  * ============================================================================
  * 8. CONFIGURACIÓN DE RUNTIME DE VOZ (MIGRACIÓN STT/TTS)
@@ -274,7 +298,7 @@ const DEBUG_CONFIG = {
 const VOICE_RUNTIME_CONFIG = {
   migration: {
     phase: 'prep',
-    enableBackendStreamingProtocol: false,
+    enableBackendStreamingProtocol: parseEnvBoolean(ENV_VOICE_TTS_STREAMING, false),
     allowBrowserFallback: true,
   },
 
@@ -290,13 +314,14 @@ const VOICE_RUNTIME_CONFIG = {
   tts: {
     // browser | backend
     mode: ENV_TTS_MODE === 'backend' ? 'backend' : 'browser',
-    backendProvider: 'kokoro|vibevoice',
+    backendProvider: ENV_VOICE_TTS_PROVIDER || 'vibevoice-realtime',
     backendTransport: 'socket.io',
     backendChunkEvent: 'TTS_AUDIO_CHUNK',
   },
 
   network: {
     backendUrl: ENV_VOICE_BACKEND_URL || null,
+    vibevWsUrl: ENV_VIBEV_WS_URL || 'ws://127.0.0.1:10001',
   },
 };
 
@@ -350,8 +375,10 @@ function getClientConfig() {
     wakeMaxSessionMs: TIMING_CONFIG.speechCapture.wakeMaxSessionMs,
     sttMode: VOICE_RUNTIME_CONFIG.stt.mode,
     ttsMode: VOICE_RUNTIME_CONFIG.tts.mode,
+    ttsProvider: VOICE_RUNTIME_CONFIG.tts.backendProvider,
     browserFallbackEnabled: VOICE_RUNTIME_CONFIG.migration.allowBrowserFallback,
     backendStreamingEnabled: VOICE_RUNTIME_CONFIG.migration.enableBackendStreamingProtocol,
+    vibevWsUrl: VOICE_RUNTIME_CONFIG.network.vibevWsUrl,
     socketHost,
     socketPort,
     socketUrl: `http://${socketHost}:${socketPort}`,

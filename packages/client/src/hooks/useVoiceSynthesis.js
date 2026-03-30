@@ -68,23 +68,21 @@ function pickBestSpanishVoice(voices) {
   return bestVoice;
 }
 
-export default function useVoiceSynthesis() {
-  const synthesisRef = useRef(
-    typeof window !== 'undefined' ? window.speechSynthesis : null
-  );
+export default function useVoiceSynthesis({ enabled = true } = {}) {
+  const synthesisRef = useRef(null);
   const utteranceRef = useRef(null);
 
   const [availableVoices, setAvailableVoices] = useState([]);
   const [isAiraSpeaking, setIsAiraSpeaking] = useState(false);
 
   const selectedVoice = useMemo(
-    () => pickBestSpanishVoice(availableVoices),
-    [availableVoices]
+    () => (enabled ? pickBestSpanishVoice(availableVoices) : null),
+    [availableVoices, enabled]
   );
 
   const cancel = useCallback(() => {
     const synthesis = synthesisRef.current;
-    if (!synthesis) {
+    if (!enabled || !synthesis) {
       return;
     }
 
@@ -98,7 +96,7 @@ export default function useVoiceSynthesis() {
       const synthesis = synthesisRef.current;
       const normalizedText = String(text || '').trim();
 
-      if (!synthesis || !normalizedText) {
+      if (!enabled || !synthesis || !normalizedText) {
         return false;
       }
 
@@ -140,10 +138,17 @@ export default function useVoiceSynthesis() {
       }
       return true;
     },
-    [selectedVoice]
+    [enabled, selectedVoice]
   );
 
   useEffect(() => {
+    if (!enabled || typeof window === 'undefined') {
+      synthesisRef.current = null;
+      setAvailableVoices([]);
+      return undefined;
+    }
+
+    synthesisRef.current = window.speechSynthesis;
     const synthesis = synthesisRef.current;
     if (!synthesis) {
       return undefined;
@@ -161,7 +166,7 @@ export default function useVoiceSynthesis() {
       synthesis.removeEventListener('voiceschanged', handleVoicesChanged);
       synthesis.cancel();
     };
-  }, []);
+  }, [enabled]);
 
   return {
     speak,

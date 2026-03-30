@@ -22,6 +22,7 @@ function createUserInputHandler({
   generateAiraResponse,
   deduper,
   buildProtocolMeta,
+  onInterruptActiveTts,
 }) {
   return async function onUserInput(payload = {}) {
     const normalizedInput = normalizeUserInputPayload(payload);
@@ -38,6 +39,17 @@ function createUserInputHandler({
     if (interruptActiveTts) {
       io.emit('STOP_TTS');
       console.log(`[socket] STOP_TTS triggered by ${source}`);
+
+      if (typeof onInterruptActiveTts === 'function') {
+        try {
+          onInterruptActiveTts({
+            socketId: socket.id,
+            source,
+          });
+        } catch (interruptError) {
+          console.error('[socket] STOP_TTS backend cancel error', interruptError);
+        }
+      }
     }
 
     if (!text) {

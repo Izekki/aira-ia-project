@@ -7,6 +7,7 @@ const { SERVER_VERSION, WS_PROTOCOL_VERSION, buildProtocolMeta } = require('./ws
 const { createInputDeduper } = require('./ws/userInput');
 const { createUserInputHandler } = require('./ws/userInputHandler');
 const { createWakeWordRuntime } = require('./wakeword/engineRuntime');
+const { createTtsProvider } = require('./tts');
 
 loadEnvFiles();
 
@@ -47,6 +48,19 @@ const wakeWordRuntimeController = createWakeWordRuntime({
 });
 
 const inputDeduper = createInputDeduper();
+const ttsProvider = createTtsProvider({
+  io,
+  buildProtocolMeta,
+  voiceRuntime: runtimeConfig.voiceRuntime,
+});
+
+if (runtimeConfig.voiceRuntime.ttsMode === 'backend') {
+  ttsProvider.connect();
+  console.log('[tts] Backend mode enabled', {
+    provider: runtimeConfig.voiceRuntime.ttsProvider,
+    vibevWsUrl: runtimeConfig.voiceRuntime.vibevWsUrl,
+  });
+}
 
 io.on('connection', (socket) => {
   console.log(`[socket] client connected: ${socket.id}`);
@@ -85,11 +99,58 @@ io.on('connection', (socket) => {
     generateAiraResponse,
     deduper: inputDeduper,
     buildProtocolMeta,
+    onInterruptActiveTts: ({ socketId }) => {
+      ttsProvider.stop({
+        socketId,
+        reason: 'interrupt',
+      });
+    },
   });
 
   socket.on('USER_INPUT', onUserInput);
 
+  socket.on('TTS_REQUEST', (payload = {}) => {
+    const text = String(payload?.text || '').trim();
+    if (!text) {
+      return;
+    }
+
+    const requestId = String(payload?.requestId || `tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`).trim();
+    const lang = String(payload?.lang || 'es-MX').trim() || 'es-MX';
+    const preset = String(payload?.preset || 'balanced').trim() || 'balanced';
+
+    const sent = ttsProvider.speak({
+      socketId: socket.id,
+      requestId,
+      text,
+      lang,
+      preset,
+    });
+
+    if (!sent) {
+      socket.emit('SYSTEM_MESSAGE', {
+        protocol: buildProtocolMeta('SYSTEM_MESSAGE'),
+        type: 'error',
+        code: 'TTS_BACKEND_UNAVAILABLE',
+        message: 'No se pudo procesar TTS en backend para esta solicitud.',
+        requestId,
+      });
+    }
+  });
+
+  socket.on('TTS_CANCEL', (payload = {}) => {
+    ttsProvider.stop({
+      socketId: socket.id,
+      requestId: String(payload?.requestId || '').trim(),
+      reason: String(payload?.reason || 'cancel').trim() || 'cancel',
+    });
+  });
+
   socket.on('disconnect', (reason) => {
+    ttsProvider.stop({
+      socketId: socket.id,
+      reason: 'disconnect',
+    });
     console.log(`[socket] client disconnected: ${socket.id} (${reason})`);
   });
 });
@@ -110,10 +171,12 @@ httpServer.listen(PORT, () => {
 
 process.on('SIGINT', () => {
   wakeWordRuntimeController.stopListening();
+  ttsProvider.close();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   wakeWordRuntimeController.stopListening();
+  ttsProvider.close();
   process.exit(0);
 });

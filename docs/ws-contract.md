@@ -69,6 +69,7 @@ Campos:
 Notas:
 - voiceRuntime declara la intencion del runtime (browser/backend) sin forzar implementacion completa.
 - cliente debe tratar voiceRuntime como metadata de capacidad, no como estado mutable.
+- cuando voiceRuntime.backendStreamingEnabled=true, el flujo TTS backend por chunks queda activo.
 
 ## Eventos cliente -> servidor
 
@@ -114,6 +115,38 @@ Uso: prueba de conectividad del canal.
   "at": 1711740000000,
   "from": "client-ui"
 }
+
+### TTS_REQUEST
+
+Uso: solicitar TTS backend para un texto.
+
+```json
+{
+  "requestId": "tts-1711740000000-ab12cd",
+  "text": "hola, esta es una prueba de voz",
+  "lang": "es-MX",
+  "preset": "balanced",
+  "metadata": {
+    "source": "aira-response",
+    "clientMessageId": "ptt-1711740000000-ab12cd"
+  }
+}
+```
+
+Notas:
+- evento activo cuando ttsMode=backend.
+- requestId correlaciona chunks y cierre de la sesion TTS.
+
+### TTS_CANCEL
+
+Uso: cancelar una solicitud TTS backend en curso.
+
+```json
+{
+  "requestId": "tts-1711740000000-ab12cd",
+  "reason": "interrupt|user|new_input"
+}
+```
 ```
 
 ### VOICE_SESSION_START (futuro inmediato)
@@ -236,6 +269,43 @@ Uso: interrumpir sintesis activa cuando llega input con interrupt_active_tts=tru
 
 Payload actual: vacio.
 
+### TTS_AUDIO_CHUNK
+
+Uso: enviar audio TTS por bloques desde backend.
+
+```json
+{
+  "protocol": {
+    "protocol": "aira-ws",
+    "version": "1.1.0",
+    "eventType": "TTS_AUDIO_CHUNK",
+    "timestamp": 1711740001800
+  },
+  "requestId": "tts-1711740000000-ab12cd",
+  "seq": 12,
+  "mime": "audio/wav",
+  "sampleRate": 24000,
+  "chunkBase64": "<...>"
+}
+```
+
+### TTS_DONE
+
+Uso: cerrar solicitud TTS backend.
+
+```json
+{
+  "protocol": {
+    "protocol": "aira-ws",
+    "version": "1.1.0",
+    "eventType": "TTS_DONE",
+    "timestamp": 1711740002200
+  },
+  "requestId": "tts-1711740000000-ab12cd",
+  "reason": "eos|cancel|error"
+}
+```
+
 ### WAKE_WORD_DETECTED
 
 Uso: notificar deteccion backend de wake word.
@@ -263,7 +333,6 @@ Uso: notificar deteccion backend de wake word.
 - STT_PARTIAL: transcripcion parcial de streaming.
 - STT_FINAL: transcripcion final del turno.
 - LLM_TOKEN: token incremental del modelo.
-- TTS_AUDIO_CHUNK: chunk de audio sintetizado desde backend.
 - VOICE_FALLBACK_NOTICE: backend/cliente informa downgrade a browser fallback.
 - VOICE_SESSION_CLOSED: sesion finalizada.
 
@@ -301,5 +370,5 @@ Fase migracion STT backend:
 - activar VOICE_SESSION_START / VOICE_AUDIO_CHUNK / STT_PARTIAL / STT_FINAL
 
 Fase migracion TTS backend:
-- activar LLM_TOKEN / TTS_AUDIO_CHUNK / VOICE_SESSION_CLOSED
+- activar LLM_TOKEN / VOICE_SESSION_CLOSED
 - mantener fallback a browser mientras backend se estabiliza

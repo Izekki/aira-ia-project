@@ -52,6 +52,15 @@ function resolveServerRuntimeConfig() {
       backendStreamingEnabled: Boolean(voiceRuntimeConfig?.migration?.enableBackendStreamingProtocol),
       sttMode: String(voiceRuntimeConfig?.stt?.mode || 'browser'),
       ttsMode: String(voiceRuntimeConfig?.tts?.mode || 'browser'),
+      ttsProvider: String(voiceRuntimeConfig?.tts?.backendProvider || 'vibevoice-realtime'),
+      voiceBackendUrl:
+        voiceRuntimeConfig?.network?.backendUrl
+          ? String(voiceRuntimeConfig.network.backendUrl)
+          : null,
+      vibevWsUrl:
+        voiceRuntimeConfig?.network?.vibevWsUrl
+          ? String(voiceRuntimeConfig.network.vibevWsUrl)
+          : null,
       browserFallbackEnabled: Boolean(voiceRuntimeConfig?.migration?.allowBrowserFallback),
     },
   };

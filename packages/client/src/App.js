@@ -1,7 +1,7 @@
 ﻿import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import useSpeech from './hooks/useSpeech';
-import useVoiceSynthesis from './hooks/useVoiceSynthesis';
+import useTTS from './hooks/useTTS';
 import Visualizer from './components/Visualizer';
 import WakeActivationOverlay from './components/WakeActivationOverlay';
 import { normalizeSpeechKey } from './lib/textNormalization';
@@ -37,6 +37,7 @@ function resolveSpeechProfile() {
 export default function App() {
   const socketRef = useRef(null);
   const chatBottomRef = useRef(null);
+  const [activeSocket, setActiveSocket] = useState(null);
   const speechProfile = resolveSpeechProfile();
   const [voiceClientConfig, setVoiceClientConfig] = useState(() => resolveVoiceClientConfig());
   const wakeWords = voiceClientConfig.wakeWords;
@@ -44,8 +45,10 @@ export default function App() {
   const wakeMaxSessionMs = voiceClientConfig.wakeMaxSessionMs;
   const sttMode = voiceClientConfig.sttMode;
   const ttsMode = voiceClientConfig.ttsMode;
+  const ttsProvider = voiceClientConfig.ttsProvider;
   const browserFallbackEnabled = voiceClientConfig.browserFallbackEnabled;
   const backendStreamingEnabled = voiceClientConfig.backendStreamingEnabled;
+  const vibevWsUrl = voiceClientConfig.vibevWsUrl;
   const serverWakeWordThreshold = voiceClientConfig.serverWakeWordThreshold;
   const socketServerUrl = voiceClientConfig.socketUrl || FALLBACK_SOCKET_SERVER_URL;
   const wakeWordsRef = useRef(wakeWords);
@@ -81,7 +84,10 @@ export default function App() {
     threshold: serverWakeWordThreshold,
   }));
 
-  const { speak, cancel, isAiraSpeaking } = useVoiceSynthesis();
+  const { speak, cancel, isAiraSpeaking } = useTTS({
+    mode: ttsMode,
+    socket: activeSocket,
+  });
   const speakRef = useRef(speak);
   const cancelRef = useRef(cancel);
 
@@ -238,8 +244,10 @@ export default function App() {
         const sameSocketUrl = prev.socketUrl === nextConfig.socketUrl;
         const sameSttMode = prev.sttMode === nextConfig.sttMode;
         const sameTtsMode = prev.ttsMode === nextConfig.ttsMode;
+        const sameTtsProvider = prev.ttsProvider === nextConfig.ttsProvider;
         const sameFallback = prev.browserFallbackEnabled === nextConfig.browserFallbackEnabled;
         const sameBackendStreaming = prev.backendStreamingEnabled === nextConfig.backendStreamingEnabled;
+        const sameVibevWsUrl = prev.vibevWsUrl === nextConfig.vibevWsUrl;
 
         if (
           sameWakeWords &&
@@ -250,8 +258,10 @@ export default function App() {
           sameSocketUrl &&
           sameSttMode &&
           sameTtsMode &&
+          sameTtsProvider &&
           sameFallback &&
-          sameBackendStreaming
+          sameBackendStreaming &&
+          sameVibevWsUrl
         ) {
           return prev;
         }
@@ -387,6 +397,7 @@ export default function App() {
         // Ignore disconnect errors while rotating socket URL.
       }
       socketRef.current = null;
+      setActiveSocket(null);
     }
 
     if (!socketRef.current) {
@@ -399,6 +410,7 @@ export default function App() {
     }
 
     const socket = socketRef.current;
+    setActiveSocket(socket);
 
     function onConnect() {
       setIsConnected(true);
@@ -502,7 +514,13 @@ export default function App() {
 
     function onAiraNudge(payload) {
       setMessages((prev) => [...prev, payload.message]);
-      speakRef.current(String(payload?.message || '').trim());
+      speakRef.current(String(payload?.message || '').trim(), {
+        lang: 'es-MX',
+        preset: 'balanced',
+        metadata: {
+          source: 'aira-nudge',
+        },
+      });
     }
 
     function onAiraResponse(payload) {
@@ -513,11 +531,21 @@ export default function App() {
       }
 
       setMessages((prev) => [...prev, `Aira: ${responseText}`]);
-      speakRef.current(responseText);
+      speakRef.current(responseText, {
+        lang: String(payload?.lang || 'es-MX'),
+        preset: String(payload?.preset || 'balanced'),
+        metadata: {
+          source: 'aira-response',
+          clientMessageId: payload?.clientMessageId || '',
+        },
+      });
     }
 
     function onStopTts() {
-      cancelRef.current();
+      cancelRef.current({
+        reason: 'interrupt',
+        notifyServer: false,
+      });
     }
 
     function onWakeWordDetected(payload) {
@@ -562,6 +590,7 @@ export default function App() {
       socket.off('WAKE_WORD_DETECTED', onWakeWordDetected);
       socket.disconnect();
       socketRef.current = null;
+      setActiveSocket(null);
     };
   }, [socketServerUrl]);
 
@@ -793,7 +822,9 @@ export default function App() {
         <p className="server-time">Umbral wake word backend: {wakeThresholdForUi.toFixed(2)}</p>
         <p className="server-time">STT runtime (migracion): {String(sttMode || 'browser')}</p>
         <p className="server-time">TTS runtime (migracion): {String(ttsMode || 'browser')}</p>
+        <p className="server-time">Proveedor TTS backend: {String(ttsProvider || 'vibevoice-realtime')}</p>
         <p className="server-time">Streaming backend habilitado: {backendStreamingEnabled ? 'si' : 'no'}</p>
+        <p className="server-time">VIBEV WS URL: {String(vibevWsUrl || 'no-configurado')}</p>
         <p className="server-time">Fallback navegador habilitado: {browserFallbackEnabled ? 'si' : 'no'}</p>
         {error && <p className="speech-error">{error}</p>}
         {wakeError && <p className="speech-error">{wakeError}</p>}

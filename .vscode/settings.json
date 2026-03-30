@@ -16,6 +16,7 @@
             "approve": true,
             "matchCommandLine": true
         },
-        "Get-Item": true
+        "Get-Item": true,
+        "C:\\Proyectos\\VibeVoice\\.venv\\Scripts\\python.exe": true
     }
 }
