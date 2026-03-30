@@ -15,6 +15,7 @@
         "/^Set-Location \"c:/Proyectos/aira-ia-project\"; node --check packages/server/lib/gemini\\.js; node --check packages/server/index\\.js$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        "Get-Item": true
     }
 }

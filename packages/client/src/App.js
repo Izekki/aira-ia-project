@@ -4,9 +4,11 @@ import useSpeech from './hooks/useSpeech';
 import useVoiceSynthesis from './hooks/useVoiceSynthesis';
 import Visualizer from './components/Visualizer';
 
-const SOCKET_SERVER_URL = 'http://127.0.0.1:4000';
+const FALLBACK_SOCKET_SERVER_URL = 'http://127.0.0.1:4000';
+const WS_PROTOCOL_NAME = 'aira-ws';
+const WS_PROTOCOL_VERSION = '1.0.0';
 const VOICE_ENGINE_MISSING_MESSAGE =
-  'Usa un navegador basado en Chromium (Chrome/Edge/Electron) con servicios de Google activos';
+  'Usa un navegador basado en Chromium (Chrome/Edge) con servicios de Google activos';
 const VISUALIZER_STATE = {
   IDLE: 'IDLE',
   LISTENING: 'LISTENING',
@@ -16,6 +18,9 @@ const VISUALIZER_STATE = {
 
 const DEFAULT_SPEECH_PROFILE = 'stable';
 const DUPLICATE_EMIT_WINDOW_MS = 7000;
+const VOICE_CONFIG_RELOAD_INTERVAL_MS = 2000;
+const WAKEWORD_AUTO_STOP_MS = 5200;
+const WAKEWORD_BOOTSTRAP_DELAY_MS = 260;
 
 function normalizeSpeechKey(value) {
   return String(value || '')
@@ -39,13 +44,79 @@ function resolveSpeechProfile() {
     : DEFAULT_SPEECH_PROFILE;
 }
 
+function clampThreshold(value, fallback = 0.2) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.max(0, Math.min(1, parsed));
+}
+
+function normalizeWakeWords(words) {
+  if (!Array.isArray(words)) {
+    return ['aira'];
+  }
+
+  const normalized = words
+    .map((word) => String(word || '').trim().toLowerCase())
+    .filter(Boolean);
+
+  return normalized.length > 0 ? normalized : ['aira'];
+}
+
+function resolveVoiceClientConfig() {
+  if (typeof window === 'undefined' || !window.VOICE_DETECTION_CONFIG) {
+    return {
+      wakeWords: ['hey aira', 'heyaira'],
+      wakeWordThreshold: 0.2,
+      wakeWordLanguage: 'es-MX',
+      wakeWordCooldownMs: 1500,
+      serverWakeWordThreshold: 0.1,
+      socketUrl: FALLBACK_SOCKET_SERVER_URL,
+    };
+  }
+
+  const cfg = window.VOICE_DETECTION_CONFIG;
+  const clientConfig = cfg?.getClientConfig?.() || {};
+  const socketHost = String(clientConfig.socketHost || cfg?.NETWORK_CONFIG?.socket?.host || '127.0.0.1');
+  const socketPort = Number(clientConfig.socketPort || cfg?.NETWORK_CONFIG?.socket?.port || 4000);
+  const socketUrl =
+    String(clientConfig.socketUrl || '').trim() ||
+    `http://${socketHost}:${Number.isFinite(socketPort) ? socketPort : 4000}`;
+
+  return {
+    wakeWords: normalizeWakeWords(clientConfig.wakeWords || cfg?.WAKE_WORDS_CONFIG?.client?.default),
+    wakeWordThreshold: clampThreshold(cfg?.CONFIDENCE_THRESHOLDS?.client?.minConfidence, 0.2),
+    wakeWordLanguage: String(clientConfig.language || cfg?.WAKE_WORDS_CONFIG?.client?.language || 'es-MX'),
+    wakeWordCooldownMs: Math.max(
+      0,
+      Number(clientConfig.cooldownMs || cfg?.TIMING_CONFIG?.detectionCooldownMs?.client || 1500)
+    ),
+    serverWakeWordThreshold: clampThreshold(cfg?.CONFIDENCE_THRESHOLDS?.server?.wakeWordThreshold, 0.1),
+    socketUrl,
+  };
+}
+
+function buildClientMessageId(source) {
+  const randomChunk = Math.random().toString(36).slice(2, 8);
+  return `${source}-${Date.now()}-${randomChunk}`;
+}
+
 export default function App() {
   const socketRef = useRef(null);
   const chatBottomRef = useRef(null);
   const speechProfile = resolveSpeechProfile();
+  const [voiceClientConfig, setVoiceClientConfig] = useState(() => resolveVoiceClientConfig());
+  const wakeWords = voiceClientConfig.wakeWords;
+  const serverWakeWordThreshold = voiceClientConfig.serverWakeWordThreshold;
+  const socketServerUrl = voiceClientConfig.socketUrl || FALLBACK_SOCKET_SERVER_URL;
+  const wakeWordsRef = useRef(wakeWords);
+  const isWakeConfirmedRef = useRef(false);
   const activePttKeyRef = useRef('');
   const processingCountRef = useRef(0);
   const isAiraSpeakingRef = useRef(false);
+  const wakeAutoStopTimeoutRef = useRef(null);
 
   const [isConnected, setIsConnected] = useState(false);
   const [serverTime, setServerTime] = useState('---');
@@ -57,11 +128,24 @@ export default function App() {
   const lastProcessedFinalIdRef = useRef(null);
   const lastEmittedSpeechTextRef = useRef('');
   const lastEmittedSpeechAtRef = useRef(0);
+  const processingTimeoutRef = useRef(null);
 
   const [isWakeConfirmed, setIsWakeConfirmed] = useState(false);
   const [isSpeechBootReady, setIsSpeechBootReady] = useState(false);
+  const [lastWakeWord, setLastWakeWord] = useState('');
+  const [isPttPressed, setIsPttPressed] = useState(false);
+  const [wakeRuntime, setWakeRuntime] = useState(() => ({
+    mode: 'server/openWakeWord',
+    active: false,
+    error: '',
+    wakeWordLabel: 'HeyAIRA (Custom)',
+    modelName: 'heyaira.onnx',
+    threshold: serverWakeWordThreshold,
+  }));
 
   const { speak, cancel, isAiraSpeaking } = useVoiceSynthesis();
+  const speakRef = useRef(speak);
+  const cancelRef = useRef(cancel);
 
   const {
     isSupported,
@@ -78,19 +162,254 @@ export default function App() {
       profile: speechProfile,
     });
 
+  const wakeWordModeLabel = wakeRuntime.mode || 'server/openWakeWord';
+  const wakeThresholdForUi = Number.isFinite(Number(wakeRuntime.threshold))
+    ? Number(wakeRuntime.threshold)
+    : serverWakeWordThreshold;
+  const wakeError = String(wakeRuntime.error || '').trim();
+  const isWakeListening =
+    isWakeConfirmed &&
+    isSpeechBootReady &&
+    wakeRuntime.active &&
+    !isListening &&
+    !isProcessing &&
+    !isPttProcessingBridge &&
+    !isAiraSpeaking;
+
+  function emitVoiceInput(rawText, source = 'ptt') {
+    const normalizedSpeechText = String(rawText || '').trim();
+    if (!normalizedSpeechText) {
+      return false;
+    }
+
+    const normalizedSpeechKey = normalizeSpeechKey(normalizedSpeechText);
+    const now = Date.now();
+    const isDuplicatedSpeech =
+      normalizedSpeechKey === lastEmittedSpeechTextRef.current &&
+      now - lastEmittedSpeechAtRef.current <= DUPLICATE_EMIT_WINDOW_MS;
+
+    if (isDuplicatedSpeech) {
+      return false;
+    }
+
+    setMessages((prev) => [...prev, `Tu: ${normalizedSpeechText}`]);
+    lastEmittedSpeechTextRef.current = normalizedSpeechKey;
+    lastEmittedSpeechAtRef.current = now;
+
+    if (!isConnected) {
+      return true;
+    }
+
+    increaseProcessing();
+    socketRef.current?.emit('USER_INPUT', {
+      content: normalizedSpeechText,
+      clientMessageId: buildClientMessageId(source),
+      fingerprint: `${source}:${normalizedSpeechKey}`,
+      timestamp: now,
+      protocol: {
+        name: WS_PROTOCOL_NAME,
+        version: WS_PROTOCOL_VERSION,
+      },
+      metadata: {
+        source,
+        interrupt_active_tts: isAiraSpeakingRef.current,
+      },
+    });
+
+    return true;
+  }
+
+  function handleServerWakeWordDetected(payload = {}) {
+    function startWakePtt() {
+      setIsPttPressed(true);
+      const started = startPTT();
+      if (!started) {
+        setIsPttPressed(false);
+        setMessages((prev) => {
+          const nextMessage = 'Wake word detectada, pero no se pudo iniciar PTT. Revisa permisos de microfono del navegador.';
+          if (prev[prev.length - 1] === nextMessage) {
+            return prev;
+          }
+          return [...prev, nextMessage];
+        });
+        return false;
+      }
+
+      if (wakeAutoStopTimeoutRef.current) {
+        clearTimeout(wakeAutoStopTimeoutRef.current);
+      }
+
+      wakeAutoStopTimeoutRef.current = setTimeout(() => {
+        setIsPttPressed(false);
+        stopPTT();
+      }, WAKEWORD_AUTO_STOP_MS);
+
+      return true;
+    }
+
+    if (isAiraSpeakingRef.current) {
+      cancelRef.current();
+    }
+
+    const resolvedWakeWord = String(payload?.wakeWord || wakeWordsRef.current[0] || 'hey aira').trim();
+    setLastWakeWord(resolvedWakeWord);
+    setMessages((prev) => {
+      const confidence = Number(payload?.confidence);
+      const confidenceText = Number.isFinite(confidence) ? ` (confianza ${confidence.toFixed(2)})` : '';
+      const nextMessage = `Wake word detectada: ${resolvedWakeWord}${confidenceText}`;
+      if (prev[prev.length - 1] === nextMessage) {
+        return prev;
+      }
+      return [...prev, nextMessage];
+    });
+
+    if (!isWakeConfirmedRef.current) {
+      setIsWakeConfirmed(true);
+      setMessages((prev) => {
+        const nextMessage = 'Wake word detectada. Inicializando canal de voz para auto-PTT...';
+        if (prev[prev.length - 1] === nextMessage) {
+          return prev;
+        }
+        return [...prev, nextMessage];
+      });
+      setTimeout(() => {
+        startWakePtt();
+      }, WAKEWORD_BOOTSTRAP_DELAY_MS);
+      return;
+    }
+
+    startWakePtt();
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    let disposed = false;
+    let lastScriptText = '';
+
+    function applyResolvedConfig() {
+      if (disposed) {
+        return;
+      }
+
+      const nextConfig = resolveVoiceClientConfig();
+      setVoiceClientConfig((prev) => {
+        const sameWakeWords =
+          prev.wakeWords.length === nextConfig.wakeWords.length &&
+          prev.wakeWords.every((word, index) => word === nextConfig.wakeWords[index]);
+        const sameThreshold = prev.wakeWordThreshold === nextConfig.wakeWordThreshold;
+        const sameLanguage = prev.wakeWordLanguage === nextConfig.wakeWordLanguage;
+        const sameCooldown = prev.wakeWordCooldownMs === nextConfig.wakeWordCooldownMs;
+        const sameServerThreshold =
+          prev.serverWakeWordThreshold === nextConfig.serverWakeWordThreshold;
+        const sameSocketUrl = prev.socketUrl === nextConfig.socketUrl;
+
+        if (
+          sameWakeWords &&
+          sameThreshold &&
+          sameLanguage &&
+          sameCooldown &&
+          sameServerThreshold &&
+          sameSocketUrl
+        ) {
+          return prev;
+        }
+
+        return nextConfig;
+      });
+    }
+
+    async function refreshVoiceConfigFromInject() {
+      try {
+        const response = await fetch(
+          `/voice-detection-config-inject.js?ts=${Date.now()}`,
+          { cache: 'no-store' }
+        );
+        if (!response.ok) {
+          return;
+        }
+
+        const scriptText = await response.text();
+        if (!scriptText || scriptText === lastScriptText) {
+          applyResolvedConfig();
+          return;
+        }
+
+        lastScriptText = scriptText;
+        const executeScript = new Function(scriptText);
+        executeScript();
+        applyResolvedConfig();
+      } catch {
+        // Keep previous runtime config when fetch fails.
+      }
+    }
+
+    applyResolvedConfig();
+    refreshVoiceConfigFromInject();
+
+    const intervalId = window.setInterval(
+      refreshVoiceConfigFromInject,
+      VOICE_CONFIG_RELOAD_INTERVAL_MS
+    );
+
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
   function increaseProcessing() {
     processingCountRef.current += 1;
     setIsProcessing(true);
+
+    // Safety timeout: if no response after 15s, reset processing state
+    if (processingTimeoutRef.current) {
+      clearTimeout(processingTimeoutRef.current);
+    }
+    processingTimeoutRef.current = setTimeout(() => {
+      console.log('[App] Processing timeout - resetting state');
+      processingCountRef.current = 0;
+      setIsProcessing(false);
+      processingTimeoutRef.current = null;
+    }, 15000);
   }
 
   function decreaseProcessing() {
     processingCountRef.current = Math.max(0, processingCountRef.current - 1);
     setIsProcessing(processingCountRef.current > 0);
+
+    // Clear timeout when processing completes
+    if (processingCountRef.current === 0 && processingTimeoutRef.current) {
+      clearTimeout(processingTimeoutRef.current);
+      processingTimeoutRef.current = null;
+    }
   }
 
   function handleWakeActivation() {
     setIsWakeConfirmed(true);
+    try {
+      window.localStorage?.setItem('AIRA_WAKEWORD_AUTO_ACTIVATE', '1');
+    } catch {
+      // Ignore localStorage write failures.
+    }
   }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    try {
+      const shouldAutoActivate = window.localStorage?.getItem('AIRA_WAKEWORD_AUTO_ACTIVATE') === '1';
+      if (shouldAutoActivate) {
+        setIsWakeConfirmed(true);
+      }
+    } catch {
+      // Ignore localStorage read failures.
+    }
+  }, []);
 
   useEffect(() => {
     setIsSpeechBootReady(isWakeConfirmed);
@@ -101,11 +420,42 @@ export default function App() {
   }, [isAiraSpeaking]);
 
   useEffect(() => {
+    wakeWordsRef.current = wakeWords;
+  }, [wakeWords]);
+
+  useEffect(() => {
+    isWakeConfirmedRef.current = isWakeConfirmed;
+  }, [isWakeConfirmed]);
+
+  useEffect(() => {
+    speakRef.current = speak;
+    cancelRef.current = cancel;
+  }, [speak, cancel]);
+
+  useEffect(() => {
+    return () => {
+      if (wakeAutoStopTimeoutRef.current) {
+        clearTimeout(wakeAutoStopTimeoutRef.current);
+        wakeAutoStopTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (socketRef.current && socketRef.current.io?.uri !== socketServerUrl) {
+      try {
+        socketRef.current.disconnect();
+      } catch {
+        // Ignore disconnect errors while rotating socket URL.
+      }
+      socketRef.current = null;
+    }
+
     if (!socketRef.current) {
-      socketRef.current = io(SOCKET_SERVER_URL, {
-        transports: ['websocket', 'polling'],
+      socketRef.current = io(socketServerUrl, {
+        path: '/socket.io',
+        transports: ['polling', 'websocket'],
         reconnection: true,
-        reconnectionAttempts: 5,
         autoConnect: false,
       });
     }
@@ -118,9 +468,29 @@ export default function App() {
 
     function onDisconnect() {
       setIsConnected(false);
+      processingCountRef.current = 0;
+      setIsProcessing(false);
+      setIsPttPressed(false);
+      setWakeRuntime((prev) => ({
+        ...prev,
+        active: false,
+      }));
+      if (processingTimeoutRef.current) {
+        clearTimeout(processingTimeoutRef.current);
+        processingTimeoutRef.current = null;
+      }
+      if (wakeAutoStopTimeoutRef.current) {
+        clearTimeout(wakeAutoStopTimeoutRef.current);
+        wakeAutoStopTimeoutRef.current = null;
+      }
     }
 
     function onConnectError(errorPayload) {
+      setWakeRuntime((prev) => ({
+        ...prev,
+        active: false,
+        error: String(errorPayload?.message || 'conexion fallida con backend wake word'),
+      }));
       setMessages((prev) => {
         const nextMessage = `Error de conexion Socket: ${errorPayload?.message || 'desconocido'}`;
         if (prev[0] === nextMessage) {
@@ -131,10 +501,29 @@ export default function App() {
     }
 
     function onServerReady(payload) {
-      setMessages((prev) => [
+      const serverVersion = String(payload?.version || 'desconocida');
+      const protocolVersion = String(payload?.wsVersion || payload?.protocol?.version || 'n/a');
+      const nextMessage = `Servidor listo. Version: ${serverVersion} | WS: ${protocolVersion}`;
+      const wakeWordPayload = payload?.wakeWord || {};
+
+      setWakeRuntime((prev) => ({
         ...prev,
-        `Servidor listo. Version: ${payload.version}`,
-      ]);
+        mode: String(wakeWordPayload.mode || prev.mode || 'server/openWakeWord'),
+        active: Boolean(wakeWordPayload.active),
+        error: String(wakeWordPayload.error || ''),
+        wakeWordLabel: String(wakeWordPayload.wakeWordLabel || prev.wakeWordLabel || 'HeyAIRA (Custom)'),
+        modelName: String(wakeWordPayload.modelName || prev.modelName || 'heyaira.onnx'),
+        threshold: Number.isFinite(Number(wakeWordPayload.threshold))
+          ? Number(wakeWordPayload.threshold)
+          : prev.threshold,
+      }));
+
+      setMessages((prev) => {
+        if (prev[prev.length - 1] === nextMessage) {
+          return prev;
+        }
+        return [...prev, nextMessage];
+      });
     }
 
     function onHeartbeat(payload) {
@@ -142,12 +531,44 @@ export default function App() {
     }
 
     function onSystemMessage(payload) {
-      setMessages((prev) => [...prev, payload.message]);
+      const nextMessage = String(payload?.message || '').trim();
+      if (!nextMessage) {
+        return;
+      }
+
+      const messageType = String(payload?.type || '').toLowerCase();
+      const messageCode = String(payload?.code || '').toUpperCase();
+      if (messageType === 'status' && messageCode === 'USER_INPUT_ACCEPTED') {
+        return;
+      }
+
+      if (messageCode === 'WAKE_WORD_ENGINE_READY') {
+        setWakeRuntime((prev) => ({
+          ...prev,
+          active: true,
+          error: '',
+        }));
+      }
+
+      if (messageCode === 'WAKE_WORD_ENGINE_ERROR') {
+        setWakeRuntime((prev) => ({
+          ...prev,
+          active: false,
+          error: nextMessage,
+        }));
+      }
+
+      setMessages((prev) => {
+        if (prev[prev.length - 1] === nextMessage) {
+          return prev;
+        }
+        return [...prev, nextMessage];
+      });
     }
 
     function onAiraNudge(payload) {
       setMessages((prev) => [...prev, payload.message]);
-      speak(String(payload?.message || '').trim());
+      speakRef.current(String(payload?.message || '').trim());
     }
 
     function onAiraResponse(payload) {
@@ -158,11 +579,25 @@ export default function App() {
       }
 
       setMessages((prev) => [...prev, `Aira: ${responseText}`]);
-      speak(responseText);
+      speakRef.current(responseText);
     }
 
     function onStopTts() {
-      cancel();
+      cancelRef.current();
+    }
+
+    function onWakeWordDetected(payload) {
+      setWakeRuntime((prev) => ({
+        ...prev,
+        active: true,
+        error: '',
+        threshold: Number.isFinite(Number(payload?.threshold))
+          ? Number(payload.threshold)
+          : prev.threshold,
+        modelName: String(payload?.modelName || prev.modelName || 'heyaira.onnx'),
+      }));
+
+      handleServerWakeWordDetected(payload);
     }
 
     setIsConnected(socket.connected);
@@ -176,6 +611,7 @@ export default function App() {
     socket.on('AIRA_NUDGE', onAiraNudge);
     socket.on('AIRA_RESPONSE', onAiraResponse);
     socket.on('STOP_TTS', onStopTts);
+    socket.on('WAKE_WORD_DETECTED', onWakeWordDetected);
 
     socket.connect();
 
@@ -189,13 +625,20 @@ export default function App() {
       socket.off('AIRA_NUDGE', onAiraNudge);
       socket.off('AIRA_RESPONSE', onAiraResponse);
       socket.off('STOP_TTS', onStopTts);
+      socket.off('WAKE_WORD_DETECTED', onWakeWordDetected);
       socket.disconnect();
+      socketRef.current = null;
     };
-  }, [speak, cancel]);
+  }, [socketServerUrl]);
 
   useEffect(() => {
     if (isAiraSpeaking) {
       setVisualizerState(VISUALIZER_STATE.SPEAKING);
+      return;
+    }
+
+    if (isPttPressed) {
+      setVisualizerState(VISUALIZER_STATE.LISTENING);
       return;
     }
 
@@ -210,7 +653,7 @@ export default function App() {
     }
 
     setVisualizerState(VISUALIZER_STATE.IDLE);
-  }, [isListening, isAiraSpeaking, isProcessing, isPttProcessingBridge]);
+  }, [isListening, isAiraSpeaking, isProcessing, isPttProcessingBridge, isPttPressed]);
 
   useEffect(() => {
     function onVoiceEngineMissing() {
@@ -240,36 +683,7 @@ export default function App() {
     }
 
     lastProcessedFinalIdRef.current = finalResult.id;
-
-    const normalizedSpeechText = String(finalResult.text || '').trim();
-    const normalizedSpeechKey = normalizeSpeechKey(normalizedSpeechText);
-    const now = Date.now();
-    const isDuplicatedSpeech =
-      normalizedSpeechKey === lastEmittedSpeechTextRef.current &&
-      now - lastEmittedSpeechAtRef.current <= DUPLICATE_EMIT_WINDOW_MS;
-
-    if (isDuplicatedSpeech) {
-      return;
-    }
-
-    setMessages((prev) => [...prev, `Tu: ${normalizedSpeechText}`]);
-    lastEmittedSpeechTextRef.current = normalizedSpeechKey;
-    lastEmittedSpeechAtRef.current = now;
-
-    if (!isConnected) {
-      return;
-    }
-
-    increaseProcessing();
-    socketRef.current?.emit('USER_INPUT', {
-      content: normalizedSpeechText,
-      fingerprint: `ptt:${normalizedSpeechKey}`,
-      timestamp: now,
-      metadata: {
-        source: 'ptt',
-        interrupt_active_tts: isAiraSpeakingRef.current,
-      },
-    });
+    emitVoiceInput(finalResult.text, 'ptt');
   }, [finalResult, isConnected]);
 
   useEffect(() => {
@@ -294,8 +708,13 @@ export default function App() {
     increaseProcessing();
     socketRef.current?.emit('USER_INPUT', {
       content: text,
+      clientMessageId: buildClientMessageId('keyboard'),
       fingerprint: `keyboard:${normalizedKey}`,
       timestamp: now,
+      protocol: {
+        name: WS_PROTOCOL_NAME,
+        version: WS_PROTOCOL_VERSION,
+      },
       metadata: {
         source: 'keyboard',
         interrupt_active_tts: isAiraSpeakingRef.current,
@@ -332,8 +751,13 @@ export default function App() {
 
       socketRef.current.emit('USER_INPUT', {
         content: '',
+        clientMessageId: buildClientMessageId(source),
         fingerprint: `interrupt:${source}:${Date.now()}`,
         timestamp: Date.now(),
+        protocol: {
+          name: WS_PROTOCOL_NAME,
+          version: WS_PROTOCOL_VERSION,
+        },
         metadata: {
           source,
           interrupt_active_tts: true,
@@ -353,6 +777,7 @@ export default function App() {
 
       event.preventDefault();
       activePttKeyRef.current = event.code;
+      setIsPttPressed(true);
 
       if (isAiraSpeakingRef.current) {
         cancel();
@@ -369,6 +794,7 @@ export default function App() {
 
       event.preventDefault();
       activePttKeyRef.current = '';
+      setIsPttPressed(false);
       stopPTT();
     }
 
@@ -378,6 +804,7 @@ export default function App() {
       }
 
       activePttKeyRef.current = '';
+      setIsPttPressed(false);
       stopPTT();
     }
 
@@ -430,6 +857,8 @@ export default function App() {
                 ? 'FATAL_ERROR'
                 : isListening
                   ? 'Escuchando microfono'
+                  : isWakeListening
+                    ? `Esperando wake word (backend): ${String(wakeRuntime.wakeWordLabel || wakeWords[0] || 'HEY AIRA').toUpperCase()}`
                   : isProcessing || isPttProcessingBridge
                     ? 'Procesando consulta'
                   : !isWakeConfirmed
@@ -442,7 +871,14 @@ export default function App() {
         </div>
 
         <p className="server-time">Heartbeat del servidor: {serverTime}</p>
+        <p className="server-time">Modo wake word activo: {wakeWordModeLabel}</p>
+        <p className="server-time">Modelo wake word backend: {wakeRuntime.modelName || 'heyaira.onnx'}</p>
+        <p className="server-time">Umbral wake word backend: {wakeThresholdForUi.toFixed(2)}</p>
         {error && <p className="speech-error">{error}</p>}
+        {wakeError && <p className="speech-error">{wakeError}</p>}
+        {lastWakeWord && (
+          <p className="server-time">Wake word detectada recientemente: {lastWakeWord}</p>
+        )}
 
         <section className="chat-container" aria-live="polite">
           {messages.length === 0 && (
@@ -498,18 +934,29 @@ export default function App() {
                 if (isAiraSpeakingRef.current) {
                   cancel();
                 }
+                setIsPttPressed(true);
                 startPTT();
               }}
-              onMouseUp={stopPTT}
-              onMouseLeave={stopPTT}
+              onMouseUp={() => {
+                setIsPttPressed(false);
+                stopPTT();
+              }}
+              onMouseLeave={() => {
+                setIsPttPressed(false);
+                stopPTT();
+              }}
               onTouchStart={(event) => {
                 event.preventDefault();
                 if (isAiraSpeakingRef.current) {
                   cancel();
                 }
+                setIsPttPressed(true);
                 startPTT();
               }}
-              onTouchEnd={stopPTT}
+              onTouchEnd={() => {
+                setIsPttPressed(false);
+                stopPTT();
+              }}
               aria-label={isListening ? 'Listening' : 'Push to Talk'}
             >
               🎙️

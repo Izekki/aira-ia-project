@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "prestart": "node ../../scripts/sync-voice-config.js",
     "start": "react-scripts start",
+    "prebuild": "node ../../scripts/sync-voice-config.js",
     "build": "react-scripts build"
   },
   "dependencies": {

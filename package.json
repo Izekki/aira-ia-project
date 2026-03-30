@@ -2,12 +2,13 @@
   "name": "aira-ia-project",
   "version": "1.0.0",
   "description": "Asistente personal inteligente de escritorio llamado **Aira**.",
-  "main": "electron/main.js",
+  "main": "packages/server/index.js",
   "scripts": {
-    "electron": "electron .",
-    "client": "set BROWSER=microsoft-edge && npm start --prefix packages/client",
+    "config:watch": "node scripts/sync-voice-config-watch.js",
+    "client": "set \"BROWSER=msedge\" && npm start --prefix packages/client",
     "server": "node packages/server/index.js",
-    "dev": "concurrently \"npm run server\" \"npm run client\""
+    "dev": "concurrently \"npm run config:watch\" \"npm run server\" \"npm run client\"",
+    "build:client": "npm run build --prefix packages/client"
   },
   "repository": {
     "type": "git",
@@ -22,8 +23,7 @@
   },
   "homepage": "https://github.com/Izekki/aira-ia-project#readme",
   "devDependencies": {
-    "concurrently": "^9.2.1",
-    "electron": "^41.1.0"
+    "concurrently": "^9.2.1"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

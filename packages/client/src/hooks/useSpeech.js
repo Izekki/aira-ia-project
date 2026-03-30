@@ -26,6 +26,7 @@ export default function useSpeech(options = {}) {
   const lastFinalSpeechKeyRef = useRef('');
   const lastFinalSpeechAtRef = useRef(0);
   const processingBridgeTimeoutRef = useRef(null);
+  const restartRecognitionTimeoutRef = useRef(null);
 
   const [isSupported, setIsSupported] = useState(true);
   const [isListening, setIsListening] = useState(false);
@@ -49,6 +50,10 @@ export default function useSpeech(options = {}) {
 
       if (processingBridgeTimeoutRef.current) {
         clearTimeout(processingBridgeTimeoutRef.current);
+      }
+      if (restartRecognitionTimeoutRef.current) {
+        clearTimeout(restartRecognitionTimeoutRef.current);
+        restartRecognitionTimeoutRef.current = null;
       }
 
       if (recognitionRef.current) {
@@ -205,6 +210,24 @@ export default function useSpeech(options = {}) {
       });
       setIsListening(false);
       isListeningRef.current = false;
+
+      // Auto-restart if PTT key/button remains pressed.
+      if (isPttActiveRef.current && enabledRef.current && !disposed) {
+        if (restartRecognitionTimeoutRef.current) {
+          clearTimeout(restartRecognitionTimeoutRef.current);
+        }
+        restartRecognitionTimeoutRef.current = setTimeout(() => {
+          if (!isPttActiveRef.current || !enabledRef.current || !recognitionRef.current) {
+            return;
+          }
+
+          try {
+            recognitionRef.current.start();
+          } catch {
+            // Ignore restart race errors.
+          }
+        }, 120);
+      }
     };
 
     recognitionRef.current = recognition;
@@ -218,6 +241,10 @@ export default function useSpeech(options = {}) {
 
       if (processingBridgeTimeoutRef.current) {
         clearTimeout(processingBridgeTimeoutRef.current);
+      }
+      if (restartRecognitionTimeoutRef.current) {
+        clearTimeout(restartRecognitionTimeoutRef.current);
+        restartRecognitionTimeoutRef.current = null;
       }
 
       if (recognitionRef.current) {
@@ -245,9 +272,11 @@ export default function useSpeech(options = {}) {
       return false;
     }
 
+    // Reset state for fresh capture
     isPttActiveRef.current = true;
     setIsPttProcessingBridge(false);
     setInterimTranscript('');
+    setFinalResult(null);
     setError('');
 
     // Hard-set runtime params before each capture to avoid stale recognizer config.
@@ -255,11 +284,44 @@ export default function useSpeech(options = {}) {
     recognitionRef.current.interimResults = true;
     recognitionRef.current.continuous = false;
 
+    if (restartRecognitionTimeoutRef.current) {
+      clearTimeout(restartRecognitionTimeoutRef.current);
+      restartRecognitionTimeoutRef.current = null;
+    }
+
+    if (isListeningRef.current) {
+      return true;
+    }
+
     try {
       recognitionRef.current.start();
       return true;
-    } catch {
-      return false;
+    } catch (startError) {
+      const errorName = String(startError?.name || '').toLowerCase();
+      const errorMessage = String(startError?.message || '').toLowerCase();
+      const blockedByPermission =
+        errorName.includes('notallowed') ||
+        errorName.includes('security') ||
+        errorMessage.includes('not allowed') ||
+        errorMessage.includes('permission');
+
+      if (blockedByPermission) {
+        setError('Wake word detectada, pero el navegador bloqueo el microfono/PTT. Revisa permisos.');
+        return false;
+      }
+
+      restartRecognitionTimeoutRef.current = setTimeout(() => {
+        if (!isPttActiveRef.current || !enabledRef.current || !recognitionRef.current) {
+          return;
+        }
+
+        try {
+          recognitionRef.current.start();
+        } catch {
+          // Ignore retry race errors.
+        }
+      }, 120);
+      return true;
     }
   }, []);
 
@@ -273,6 +335,10 @@ export default function useSpeech(options = {}) {
 
     if (processingBridgeTimeoutRef.current) {
       clearTimeout(processingBridgeTimeoutRef.current);
+    }
+    if (restartRecognitionTimeoutRef.current) {
+      clearTimeout(restartRecognitionTimeoutRef.current);
+      restartRecognitionTimeoutRef.current = null;
     }
 
     processingBridgeTimeoutRef.current = setTimeout(() => {

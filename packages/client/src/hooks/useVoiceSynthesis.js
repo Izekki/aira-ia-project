@@ -38,7 +38,34 @@ function pickBestSpanishVoice(voices) {
     return null;
   }
 
-  return [...spanishVoices].sort((a, b) => scoreVoice(b) - scoreVoice(a))[0];
+  // FIRST: Try to get saved voice preference from localStorage
+  try {
+    const savedVoiceName = window?.localStorage?.getItem('AIRA_SELECTED_VOICE');
+    if (savedVoiceName) {
+      const savedVoice = spanishVoices.find((v) => v.name === savedVoiceName);
+      if (savedVoice) {
+        console.log('[useVoiceSynthesis] Using saved voice:', savedVoiceName);
+        return savedVoice;
+      }
+    }
+  } catch {
+    // localStorage not available, continue to autopick
+  }
+
+  // FALLBACK: Score and pick best voice
+  const bestVoice = [...spanishVoices].sort((a, b) => scoreVoice(b) - scoreVoice(a))[0];
+
+  // SAVE: Store the selected voice preference
+  if (bestVoice) {
+    try {
+      window?.localStorage?.setItem('AIRA_SELECTED_VOICE', bestVoice.name);
+      console.log('[useVoiceSynthesis] Selected and saved voice:', bestVoice.name);
+    } catch {
+      // localStorage not available, continue anyway
+    }
+  }
+
+  return bestVoice;
 }
 
 export default function useVoiceSynthesis() {

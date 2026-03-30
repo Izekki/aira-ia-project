@@ -1,6 +1,6 @@
 # Aira IA Project
 
-Aira es un asistente de escritorio con interfaz multimodal (voz + texto), memoria en Supabase y respuesta en tiempo real via Socket.IO.
+Aira es un asistente web con interfaz multimodal (voz + texto), memoria en Supabase y respuesta en tiempo real via Socket.IO.
 
 ## Estado actual del proyecto
 
@@ -11,7 +11,7 @@ El repositorio ya implementa una base funcional para interaccion continua:
 - Sintesis de voz con seleccion automatica de voz en espanol.
 - Servidor Node.js con eventos Socket.IO, heartbeat y manejo de fallback.
 - Persistencia de historial conversacional en Supabase (tabla memories).
-- Orquestacion de ventana de escritorio por Electron.
+- Operacion Web-Only (sin contenedor de escritorio).
 
 ## Objetivo operativo
 
@@ -65,11 +65,6 @@ Construir un asistente llamado Aira que:
 	- Supabase para guardar mensajes de usuario y Aira.
 	- Recuperacion de memorias recientes para enriquecer prompt.
 
-### 5) Capa desktop
-
-- Ruta principal: electron/main.js
-- Electron abre una ventana y carga la UI del cliente en 127.0.0.1:3000.
-
 ## Flujo funcional resumido
 
 1. El cliente inicia, conecta por socket y muestra estado.
@@ -83,7 +78,6 @@ Construir un asistente llamado Aira que:
 
 ## Estructura del monorepo
 
-- electron/: contenedor de escritorio.
 - packages/client/: interfaz React.
 - packages/server/: backend de orquestacion y memoria.
 - PLAN_*.md: bitacoras de planificacion por sprint.
@@ -107,11 +101,9 @@ En el servidor se usan variables para conectores y memoria:
 - npm run client: inicia cliente React.
 - npm run server: inicia servidor de orquestacion.
 - npm run dev: ejecuta cliente y servidor en paralelo.
-- npm run electron: abre contenedor de escritorio.
 
 ## Riesgos y brechas actuales
 
-- En electron/main.js se usa nodeIntegration habilitado y contextIsolation deshabilitado; para hardening futuro se recomienda preload y aislamiento.
 - La memoria actual es historica simple (sin embeddings activos), aunque el diseño apunta a evolucion vectorial.
 - La seleccion de proveedor LLM se hace por bloque activo/comentado en codigo; conviene llevarla a bandera de entorno.
 

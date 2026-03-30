@@ -36,6 +36,7 @@ Politica de respuesta:
 - Evita relleno; prioriza utilidad practica.
 - Longitud por defecto: corta (2-4 frases, maximo 90 palabras), salvo que el usuario pida detalle.
 - Si la consulta es tecnica: responde directo, accionable y con pasos concretos.
+- Si ya existe historial conversacional, NO saludes de nuevo ni reinicies la conversacion.
 - Si hay error de servicio o cuota, manten el personaje y ofrece una recaida honesta + siguiente paso.`;
 
 let geminiModel = null;
@@ -70,6 +71,8 @@ function buildPrompt({ userText, recentMemories = [] }) {
     })
     .join('\n');
 
+  const hasPriorAiraReply = hasPreviousAiraReply(recentMemories);
+
   return [
     'Contexto de memoria reciente (orden cronologico):',
     memoryLines || 'Sin memoria previa disponible.',
@@ -77,10 +80,36 @@ function buildPrompt({ userText, recentMemories = [] }) {
     'Mensaje actual de Izekki:',
     cleanedInput,
     '',
+    hasPriorAiraReply
+      ? 'Estado del hilo: conversacion en curso. No saludes ni reinicies contexto.'
+      : 'Estado del hilo: primer intercambio. Puedes saludar una sola vez si aporta naturalidad.',
     'Cumple estrictamente las reglas de identidad y estilo del sistema.',
     'No uses "Rolo" salvo trigger emocional explicito.',
+    'Si hay historial previo, evita "Hola" y responde directo sobre el tema en curso.',
     'Responde breve, util y accionable.',
   ].join('\n');
+}
+
+function hasPreviousAiraReply(recentMemories = []) {
+  return recentMemories.some(
+    (entry) => String(entry?.role || '').trim().toLowerCase() === 'aira'
+  );
+}
+
+function stripContinuationGreeting(text) {
+  const normalized = String(text || '').trim();
+  if (!normalized) {
+    return normalized;
+  }
+
+  const greetingPrefixPattern = /^[!¡]?\s*(hola(?:\s+iz(?:e|é)kki)?|buen(?:os|as)\s+(?:dias|tardes|noches))[!.,\s-]*/i;
+  const withoutGreeting = normalized.replace(greetingPrefixPattern, '').trim();
+
+  if (!withoutGreeting) {
+    return normalized;
+  }
+
+  return withoutGreeting.charAt(0).toUpperCase() + withoutGreeting.slice(1);
 }
 
 function extractLlmTextFromChoice(choice = {}) {
@@ -210,6 +239,10 @@ async function generateAiraResponse({ userText, recentMemories = [], inputSource
 
     if (!finalAiraText) {
       finalAiraText = 'No logre cerrar una respuesta util. Repitelo en una frase y te respondo directo.';
+    }
+
+    if (hasPreviousAiraReply(recentMemories)) {
+      finalAiraText = stripContinuationGreeting(finalAiraText);
     }
 
     console.log('[LLM] local choice summary', {
