@@ -79,8 +79,8 @@ export default function App() {
     mode: 'server/openWakeWord',
     active: false,
     error: '',
-    wakeWordLabel: 'HeyAIRA (Custom)',
-    modelName: 'heyaira.onnx',
+    wakeWordLabel: 'AIRA (Custom)',
+    modelName: 'aira.onnx',
     threshold: serverWakeWordThreshold,
   }));
 
@@ -457,8 +457,8 @@ export default function App() {
         mode: String(wakeWordPayload.mode || prev.mode || 'server/openWakeWord'),
         active: Boolean(wakeWordPayload.active),
         error: String(wakeWordPayload.error || ''),
-        wakeWordLabel: String(wakeWordPayload.wakeWordLabel || prev.wakeWordLabel || 'HeyAIRA (Custom)'),
-        modelName: String(wakeWordPayload.modelName || prev.modelName || 'heyaira.onnx'),
+        wakeWordLabel: String(wakeWordPayload.wakeWordLabel || prev.wakeWordLabel || 'AIRA (Custom)'),
+        modelName: String(wakeWordPayload.modelName || prev.modelName || 'aira.onnx'),
         threshold: Number.isFinite(Number(wakeWordPayload.threshold))
           ? Number(wakeWordPayload.threshold)
           : prev.threshold,
@@ -556,7 +556,7 @@ export default function App() {
         threshold: Number.isFinite(Number(payload?.threshold))
           ? Number(payload.threshold)
           : prev.threshold,
-        modelName: String(payload?.modelName || prev.modelName || 'heyaira.onnx'),
+        modelName: String(payload?.modelName || prev.modelName || 'aira.onnx'),
       }));
 
       handleServerWakeWordDetected(payload);
@@ -818,7 +818,7 @@ export default function App() {
 
         <p className="server-time">Heartbeat del servidor: {serverTime}</p>
         <p className="server-time">Modo wake word activo: {wakeWordModeLabel}</p>
-        <p className="server-time">Modelo wake word backend: {wakeRuntime.modelName || 'heyaira.onnx'}</p>
+        <p className="server-time">Modelo wake word backend: {wakeRuntime.modelName || 'aira.onnx'}</p>
         <p className="server-time">Umbral wake word backend: {wakeThresholdForUi.toFixed(2)}</p>
         <p className="server-time">STT runtime (migracion): {String(sttMode || 'browser')}</p>
         <p className="server-time">TTS runtime (migracion): {String(ttsMode || 'browser')}</p>

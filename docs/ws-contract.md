@@ -52,8 +52,8 @@ Campos:
     "mode": "server/openWakeWord",
     "active": true,
     "error": "",
-    "wakeWordLabel": "HeyAIRA (Custom)",
-    "modelName": "heyaira.onnx",
+    "wakeWordLabel": "AIRA (Custom)",
+    "modelName": "aira.onnx",
     "threshold": 0.18
   },
   "voiceRuntime": {

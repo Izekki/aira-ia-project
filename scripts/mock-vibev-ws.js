@@ -51,8 +51,60 @@ server.on('listening', () => {
   console.log(`[mock-vibev] WS mock escuchando en ws://127.0.0.1:${port}`);
 });
 
-server.on('connection', (socket) => {
+server.on('connection', (socket, request) => {
   const activeStreams = new Map();
+  
+  // Extraer query params de la URL de conexión
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  const queryParams = {
+    text: url.searchParams.get('text') || '',
+    voice: url.searchParams.get('voice') || '',
+    cfg: url.searchParams.get('cfg') || '1.5',
+    steps: url.searchParams.get('steps') || '',
+  };
+
+  // Si la solicitud trae query params, iniciar stream inmediatamente
+  if (queryParams.text) {
+    const requestId = 'mock-' + Date.now();
+    const text = String(queryParams.text).trim();
+    const durationMs = Math.max(350, Math.min(1800, text.length * 22));
+    const wave = createSineWavBuffer({
+      durationMs,
+      frequency: 440,
+      sampleRate: SAMPLE_RATE,
+    });
+
+    const chunkSize = 3200;
+    let cursor = 0;
+    let seq = 0;
+
+    const intervalRef = setInterval(() => {
+      if (socket.readyState !== socket.OPEN) {
+        clearInterval(intervalRef);
+        activeStreams.delete(requestId);
+        return;
+      }
+
+      if (cursor >= wave.length) {
+        socket.send(JSON.stringify({
+          type: 'log',
+          event: 'backend_stream_complete',
+          requestId,
+        }));
+        clearInterval(intervalRef);
+        activeStreams.delete(requestId);
+        return;
+      }
+
+      const chunk = wave.slice(cursor, Math.min(cursor + chunkSize, wave.length));
+      socket.send(chunk);
+      cursor += chunkSize;
+      seq += 1;
+    }, 55); // 55ms aprox para simular streaming
+
+    activeStreams.set(requestId, { intervalRef });
+    console.log(`[mock-vibev] Iniciando stream para texto: "${text}" (${durationMs}ms)`);
+  }
 
   function stopStream(requestId, reason = 'cancel') {
     const active = activeStreams.get(requestId);

@@ -69,6 +69,21 @@ export default function useBackendTTSStream({ socket }) {
 
     stopPlayback();
 
+    const totalBytes = state.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const sampleCount = totalBytes / 2;
+    const sampleRate = state.sampleRate || 24000;
+    const bufferedMs = (sampleCount / sampleRate) * 1000;
+
+    console.log('[useBackendTTSStream.playBufferedRequest] BUFFER_STATS', {
+      requestId,
+      totalBytes,
+      chunkCount: state.chunks.length,
+      sampleRate,
+      bufferedMs: Math.round(bufferedMs),
+      mime: state.mime,
+      timestamp: new Date().toISOString(),
+    });
+
     const audioBlob = new Blob(state.chunks, {
       type: state.mime || 'audio/wav',
     });
@@ -79,18 +94,21 @@ export default function useBackendTTSStream({ socket }) {
     audioRef.current = audio;
 
     audio.onended = () => {
+      console.log('[useBackendTTSStream] Playback ended', { requestId, timestamp: new Date().toISOString() });
       stopPlayback();
       clearRequest(requestId);
       setIsAiraSpeaking(false);
     };
 
     audio.onerror = () => {
+      console.error('[useBackendTTSStream] Playback error', { requestId, timestamp: new Date().toISOString() });
       stopPlayback();
       clearRequest(requestId);
       setIsAiraSpeaking(false);
     };
 
-    void audio.play().catch(() => {
+    void audio.play().catch((err) => {
+      console.error('[useBackendTTSStream] Play failed', { requestId, error: String(err), timestamp: new Date().toISOString() });
       stopPlayback();
       clearRequest(requestId);
       setIsAiraSpeaking(false);
@@ -179,6 +197,7 @@ export default function useBackendTTSStream({ socket }) {
 
       const chunk = decodeBase64Chunk(payload?.chunkBase64);
       if (!chunk) {
+        console.warn('[useBackendTTSStream.onAudioChunk] Failed to decode chunk', { requestId });
         return;
       }
 
@@ -190,12 +209,37 @@ export default function useBackendTTSStream({ socket }) {
           sampleRate: 24000,
           startedAt: Date.now(),
           firstChunkAt: 0,
+          chunkCount: 0,
+          totalDecodedBytes: 0,
         };
         requestStoreRef.current.set(requestId, requestState);
       }
 
+      requestState.chunkCount += 1;
+      requestState.totalDecodedBytes += chunk.length;
+
       if (!requestState.firstChunkAt) {
         requestState.firstChunkAt = Date.now();
+        console.log('[useBackendTTSStream.onAudioChunk] FIRST_CHUNK', {
+          requestId,
+          latencyMs: requestState.firstChunkAt - requestState.startedAt,
+          chunkByteLength: chunk.length,
+          format: String(payload?.mime || 'audio/wav'),
+          sampleRate: Number(payload?.sampleRate || 24000),
+          seq: Number(payload?.seq || 0),
+          timestamp: new Date().toISOString(),
+        });
+      } else if (requestState.chunkCount % 5 === 0) {
+        console.log('[useBackendTTSStream.onAudioChunk] PCM_CHUNK', {
+          requestId,
+          chunkCount: requestState.chunkCount,
+          currentChunkBytes: chunk.length,
+          totalDecodedBytes: requestState.totalDecodedBytes,
+          format: String(payload?.mime || 'audio/wav'),
+          sampleRate: Number(payload?.sampleRate || 24000),
+          seq: Number(payload?.seq || 0),
+          timestamp: new Date().toISOString(),
+        });
       }
 
       requestState.mime = String(payload?.mime || requestState.mime || 'audio/wav');
@@ -218,10 +262,22 @@ export default function useBackendTTSStream({ socket }) {
     function onTtsDone(payload = {}) {
       const requestId = String(payload?.requestId || activeRequestIdRef.current || '').trim();
       if (!requestId) {
+        console.warn('[useBackendTTSStream.onTtsDone] No requestId');
         return;
       }
 
       const reason = String(payload?.reason || 'eos').trim().toLowerCase() || 'eos';
+      const requestState = requestStoreRef.current.get(requestId);
+      
+      console.log('[useBackendTTSStream.onTtsDone]', {
+        requestId,
+        reason,
+        totalChunks: requestState?.chunks?.length || 0,
+        totalSize: requestState?.chunks?.reduce((sum, chunk) => sum + chunk.length, 0) || 0,
+        durationMs: requestState ? Date.now() - requestState.startedAt : -1,
+        timestamp: new Date().toISOString(),
+      });
+      
       if (reason !== 'eos') {
         clearRequest(requestId);
         stopPlayback();

@@ -40,7 +40,7 @@ Aira es un asistente multimodal (voz + texto) orientado a uso web local, con mem
 - Responsabilidades:
   - Canal Socket.IO (`/socket.io`).
   - Eventos `SERVER_READY`, `HEARTBEAT`, `SYSTEM_MESSAGE`, `AIRA_RESPONSE`, `WAKE_WORD_DETECTED`.
-  - Deteccion wake word server-side (`heyaira.onnx` por defecto).
+  - Deteccion wake word server-side (`aira.onnx` por defecto).
   - Persistencia de memoria conversacional en Supabase.
 
 ### Configuracion de voz
@@ -84,7 +84,7 @@ Servidor/LLM/memoria:
 
 Wake word:
 
-- `WAKE_WORD_MODEL` (ej. `heyaira.onnx`)
+- `WAKE_WORD_MODEL` (ej. `aira.onnx`)
 - `WAKE_WORD_THRESHOLD` (sensibilidad clasificador)
 - `WAKE_WORD_VAD_THRESHOLD` (filtro de actividad de voz)
 

@@ -4,8 +4,8 @@ function createWakeWordRuntime({ WakeWordService, io, buildProtocolMeta, voiceSe
     mode: 'server/openWakeWord',
     active: false,
     error: '',
-    wakeWordLabel: String(voiceServerConfig.label || 'HeyAIRA (Custom)'),
-    modelName: String(voiceServerConfig.modelName || 'heyaira.onnx'),
+    wakeWordLabel: String(voiceServerConfig.label || 'AIRA (Custom)'),
+    modelName: String(voiceServerConfig.modelName || 'aira.onnx'),
     threshold: Number(voiceServerConfig.wakeWordThreshold || 0.1),
   };
 

@@ -24,7 +24,7 @@ function normalizeWakeWords(words) {
 export function resolveVoiceClientConfig() {
   if (typeof window === 'undefined' || !window.VOICE_DETECTION_CONFIG) {
     return {
-      wakeWords: ['hey aira', 'heyaira'],
+      wakeWords: ['hey aira', 'aira'],
       wakeWordThreshold: 0.2,
       wakeWordLanguage: 'es-MX',
       wakeWordCooldownMs: 1500,

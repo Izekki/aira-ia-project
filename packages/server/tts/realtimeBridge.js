@@ -214,6 +214,14 @@ function createVibeVoiceRealtimeBridge({ wsUrl, io, buildProtocolMeta }) {
     state.timeoutRef = setTimeout(() => {
       const current = activeRequests.get(normalizedRequestId);
       if (!current) return;
+      
+      console.error('[tts] TTS_TIMEOUT', {
+        requestId: normalizedRequestId,
+        text: normalizedText.substring(0, 50),
+        elapsedMs: Date.now() - current.startedAt,
+        timestamp: new Date().toISOString(),
+      });
+      
       emitSystemMessage(current.socketId, 'TTS_BACKEND_ERROR', 'Timeout esperando audio del backend TTS.');
       emitDone({ requestId: normalizedRequestId, reason: 'error' });
     }, REQUEST_TIMEOUT_MS);
@@ -234,27 +242,105 @@ function createVibeVoiceRealtimeBridge({ wsUrl, io, buildProtocolMeta }) {
     state.ws = ws;
 
     ws.on('open', () => {
-      logTelemetry('VIBEV_WS_OPEN', { requestId: normalizedRequestId });
+      logTelemetry('VIBEV_WS_OPEN', { 
+        requestId: normalizedRequestId,
+        streamUrl: streamUrl.split('?')[0], // no mostrar full URL por seguridad
+        timestamp: new Date().toISOString(),
+      });
     });
 
     ws.on('message', (rawMessage) => {
       const requestState = activeRequests.get(normalizedRequestId);
       if (!requestState) return;
 
+      // ============ LOG TEMPORAL: INSPECCIONAR QUÉ LLEGA ============
+      const isBuffer = Buffer.isBuffer(rawMessage);
+      let inspectionData = {
+        isBuffer,
+        size: isBuffer ? rawMessage.length : String(rawMessage).length,
+        type: isBuffer ? 'Buffer' : 'String',
+      };
+
+      if (isBuffer) {
+        // Para Buffer: mostrar primeros bytes en hex y si tiene "RIFF"
+        const firstBytes = rawMessage.slice(0, 12);
+        const riffCheck = firstBytes.toString('ascii', 0, 4) === 'RIFF';
+        const hexPreview = firstBytes.toString('hex');
+        
+        inspectionData = {
+          ...inspectionData,
+          format: riffCheck ? 'WAV (tiene RIFF)' : 'Posible PCM/raw',
+          hexPreview,
+          firstBytesAscii: firstBytes.toString('ascii', 0, 4),
+        };
+      } else {
+        // Para String: mostrar primeros 100 caracteres y si tiene data-URI
+        const strMsg = String(rawMessage);
+        const preview = strMsg.substring(0, 100);
+        const hasDataUri = preview.includes('data:');
+        const hasRiffBase64 = preview.includes('UklGR'); // RIFF en base64
+        const isJsonLike = preview.trim().startsWith('{') || preview.trim().startsWith('[');
+        
+        inspectionData = {
+          ...inspectionData,
+          preview,
+          hasDataUri,
+          hasRiffBase64,
+          isJsonLike,
+        };
+      }
+
+      console.log('[INSPECT_VIBEV_MESSAGE]', {
+        requestId: normalizedRequestId,
+        message: inspectionData,
+        timestamp: new Date().toISOString(),
+      });
+      // ============ FIN LOG TEMPORAL ============
+
       // VibeVoice sends:
       // - JSON logs as text
-      // - PCM16 audio as binary bytes
+      // - PCM16 audio as binary bytes (sometimes with WAV header in first chunk)
       if (Buffer.isBuffer(rawMessage)) {
-        requestState.pcmChunks.push(rawMessage);
+        // Validar y descartar WAV header si existe
+        let audioData = rawMessage;
+        let hadWavHeader = false;
+        
+        if (rawMessage.length >= 44 && rawMessage.slice(0, 4).toString('ascii') === 'RIFF') {
+          audioData = rawMessage.slice(44);
+          hadWavHeader = true;
+          logTelemetry('PCM_VALIDATION_WAV_HEADER_DETECTED', {
+            requestId: normalizedRequestId,
+            receivedBytes: rawMessage.length,
+            headerSize: 44,
+            pcmBytes: audioData.length,
+            sampleRate: requestState.sampleRate,
+            seq: requestState.seq,
+          });
+        }
+        
+        requestState.pcmChunks.push(audioData);
+        requestState.seq += 1;
 
         if (!requestState.firstChunkAt) {
           requestState.firstChunkAt = Date.now();
-          logTelemetry('TTS_FIRST_CHUNK_SENT', {
+          logTelemetry('TTS_FIRST_CHUNK_RECEIVED', {
             requestId: normalizedRequestId,
             textLength: requestState.textLength,
             lang: requestState.lang,
             preset: requestState.preset,
             latencyMs: requestState.firstChunkAt - requestState.startedAt,
+            chunkSize: audioData.length,
+            hadWavHeader: hadWavHeader,
+            sampleRate: requestState.sampleRate,
+            timestamp: new Date().toISOString(),
+          });
+        } else if (requestState.seq % 5 === 0) {
+          logTelemetry('PCM_STREAMING_CHUNK', {
+            requestId: normalizedRequestId,
+            seq: requestState.seq,
+            pcmBytes: audioData.length,
+            totalPcmAccumulated: requestState.pcmChunks.reduce((sum, chunk) => sum + chunk.length, 0),
+            sampleRate: requestState.sampleRate,
           });
         }
         return;
@@ -281,6 +367,13 @@ function createVibeVoiceRealtimeBridge({ wsUrl, io, buildProtocolMeta }) {
         }
 
         if (event === 'backend_stream_complete') {
+          logTelemetry('TTS_BACKEND_STREAM_COMPLETE', {
+            requestId: normalizedRequestId,
+            totalChunks: requestState.pcmChunks.length,
+            totalSize: requestState.pcmChunks.reduce((sum, chunk) => sum + chunk.length, 0),
+            durationMs: Date.now() - requestState.startedAt,
+            timestamp: new Date().toISOString(),
+          });
           // finalize -> send WAV base64 -> done
           try {
             finalizeAsWav(requestState);
@@ -295,7 +388,11 @@ function createVibeVoiceRealtimeBridge({ wsUrl, io, buildProtocolMeta }) {
     });
 
     ws.on('error', (error) => {
-      console.error('[tts] VibeVoice websocket error:', error?.message || error);
+      console.error('[tts] VibeVoice websocket error:', {
+        requestId: normalizedRequestId,
+        error: error?.message || String(error),
+        timestamp: new Date().toISOString(),
+      });
       emitSystemMessage(normalizedSocketId, 'TTS_BACKEND_UNAVAILABLE', 'No se pudo conectar al backend TTS (VibeVoice).');
       emitDone({ requestId: normalizedRequestId, reason: 'error' });
     });
@@ -303,6 +400,14 @@ function createVibeVoiceRealtimeBridge({ wsUrl, io, buildProtocolMeta }) {
     ws.on('close', () => {
       const requestState = activeRequests.get(normalizedRequestId);
       if (!requestState) return;
+      
+      logTelemetry('VIBEV_WS_CLOSE', {
+        requestId: normalizedRequestId,
+        hadChunks: requestState?.pcmChunks?.length > 0,
+        chunkCount: requestState?.pcmChunks?.length || 0,
+        timestamp: new Date().toISOString(),
+      });
+      
       // Si cierra sin backend_stream_complete, igual marcamos done (probable cancel o error)
       // Evitamos doble done si ya se limpió.
       scheduleReconnect();

@@ -119,6 +119,15 @@ io.on('connection', (socket) => {
     const lang = String(payload?.lang || 'es-MX').trim() || 'es-MX';
     const preset = String(payload?.preset || 'balanced').trim() || 'balanced';
 
+    console.log('[socket.TTS_REQUEST]', {
+      socketId: socket.id,
+      requestId,
+      text: text.substring(0, 50) + (text.length > 50 ? '...' : ''),
+      lang,
+      preset,
+      timestamp: new Date().toISOString(),
+    });
+
     const sent = ttsProvider.speak({
       socketId: socket.id,
       requestId,
@@ -139,10 +148,20 @@ io.on('connection', (socket) => {
   });
 
   socket.on('TTS_CANCEL', (payload = {}) => {
+    const requestId = String(payload?.requestId || '').trim();
+    const reason = String(payload?.reason || 'cancel').trim() || 'cancel';
+    
+    console.log('[socket.TTS_CANCEL]', {
+      socketId: socket.id,
+      requestId,
+      reason,
+      timestamp: new Date().toISOString(),
+    });
+    
     ttsProvider.stop({
       socketId: socket.id,
-      requestId: String(payload?.requestId || '').trim(),
-      reason: String(payload?.reason || 'cancel').trim() || 'cancel',
+      requestId,
+      reason,
     });
   });
 
