@@ -7,6 +7,8 @@ const REQUEST_TIMEOUT_MS = 20000;
 const DEFAULT_SAMPLE_RATE = 24000;
 const DEFAULT_CHANNELS = 1;
 const DEFAULT_CFG = 1.5;
+const PCM_MIME = 'audio/pcm';
+const PCM_FORMAT = 'pcm16';
 
 function safeBuildProtocolMeta(buildProtocolMeta, eventType) {
   if (typeof buildProtocolMeta !== 'function') {
@@ -36,31 +38,6 @@ function pickVoiceFromLang(lang, fallback = 'en-Carter_man') {
   return fallback;
 }
 
-function pcm16ToWavBuffer(pcm16Buffer, sampleRate = DEFAULT_SAMPLE_RATE, channels = DEFAULT_CHANNELS) {
-  const bitsPerSample = 16;
-  const byteRate = sampleRate * channels * (bitsPerSample / 8);
-  const blockAlign = channels * (bitsPerSample / 8);
-  const dataSize = pcm16Buffer.length;
-
-  const header = Buffer.alloc(44);
-  header.write('RIFF', 0);
-  header.writeUInt32LE(36 + dataSize, 4);
-  header.write('WAVE', 8);
-
-  header.write('fmt ', 12);
-  header.writeUInt32LE(16, 16); // PCM fmt chunk size
-  header.writeUInt16LE(1, 20); // audio format = PCM
-  header.writeUInt16LE(channels, 22);
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(byteRate, 28);
-  header.writeUInt16LE(blockAlign, 32);
-  header.writeUInt16LE(bitsPerSample, 34);
-
-  header.write('data', 36);
-  header.writeUInt32LE(dataSize, 40);
-
-  return Buffer.concat([header, pcm16Buffer]);
-}
 
 function buildVibeVoiceStreamUrl(baseWsUrl, { text, voice, cfg, steps }) {
   const base = normalizeWsUrl(baseWsUrl);
@@ -156,21 +133,6 @@ function createVibeVoiceRealtimeBridge({ wsUrl, io, buildProtocolMeta }) {
     }, RECONNECT_DELAY_MS);
   }
 
-  function finalizeAsWav(requestState) {
-    const pcm = Buffer.concat(requestState.pcmChunks);
-    const wav = pcm16ToWavBuffer(pcm, requestState.sampleRate, requestState.channels);
-    const chunkBase64 = wav.toString('base64');
-
-    io.to(requestState.socketId).emit('TTS_AUDIO_CHUNK', {
-      protocol: safeBuildProtocolMeta(buildProtocolMeta, 'TTS_AUDIO_CHUNK'),
-      requestId: requestState.requestId,
-      seq: 0,
-      mime: 'audio/wav',
-      sampleRate: requestState.sampleRate,
-      chunkBase64,
-    });
-  }
-
   function speak({ socketId, requestId, text, lang = 'es-MX', preset = 'balanced' }) {
     const normalizedText = String(text || '').trim();
     const normalizedSocketId = String(socketId || '').trim();
@@ -206,7 +168,6 @@ function createVibeVoiceRealtimeBridge({ wsUrl, io, buildProtocolMeta }) {
       seq: 0,
       timeoutRef: null,
       ws: null,
-      pcmChunks: [],
       sampleRate: DEFAULT_SAMPLE_RATE,
       channels: DEFAULT_CHANNELS,
     };
@@ -249,100 +210,54 @@ function createVibeVoiceRealtimeBridge({ wsUrl, io, buildProtocolMeta }) {
       });
     });
 
-    ws.on('message', (rawMessage) => {
+    ws.on('message', (rawMessage, isBinary) => {
       const requestState = activeRequests.get(normalizedRequestId);
       if (!requestState) return;
 
-      // ============ LOG TEMPORAL: INSPECCIONAR QUÉ LLEGA ============
-      const isBuffer = Buffer.isBuffer(rawMessage);
-      let inspectionData = {
-        isBuffer,
-        size: isBuffer ? rawMessage.length : String(rawMessage).length,
-        type: isBuffer ? 'Buffer' : 'String',
-      };
-
-      if (isBuffer) {
-        // Para Buffer: mostrar primeros bytes en hex y si tiene "RIFF"
-        const firstBytes = rawMessage.slice(0, 12);
-        const riffCheck = firstBytes.toString('ascii', 0, 4) === 'RIFF';
-        const hexPreview = firstBytes.toString('hex');
-        
-        inspectionData = {
-          ...inspectionData,
-          format: riffCheck ? 'WAV (tiene RIFF)' : 'Posible PCM/raw',
-          hexPreview,
-          firstBytesAscii: firstBytes.toString('ascii', 0, 4),
-        };
-      } else {
-        // Para String: mostrar primeros 100 caracteres y si tiene data-URI
-        const strMsg = String(rawMessage);
-        const preview = strMsg.substring(0, 100);
-        const hasDataUri = preview.includes('data:');
-        const hasRiffBase64 = preview.includes('UklGR'); // RIFF en base64
-        const isJsonLike = preview.trim().startsWith('{') || preview.trim().startsWith('[');
-        
-        inspectionData = {
-          ...inspectionData,
-          preview,
-          hasDataUri,
-          hasRiffBase64,
-          isJsonLike,
-        };
-      }
-
-      console.log('[INSPECT_VIBEV_MESSAGE]', {
-        requestId: normalizedRequestId,
-        message: inspectionData,
-        timestamp: new Date().toISOString(),
-      });
-      // ============ FIN LOG TEMPORAL ============
-
       // VibeVoice sends:
-      // - JSON logs as text
-      // - PCM16 audio as binary bytes (sometimes with WAV header in first chunk)
-      if (Buffer.isBuffer(rawMessage)) {
-        // Validar y descartar WAV header si existe
+      // - PCM16 audio as binary frames (first chunk may include a WAV header)
+      // - JSON control messages as text frames (log/done)
+      if (isBinary) {
         let audioData = rawMessage;
-        let hadWavHeader = false;
-        
+
+        // Detect and strip WAV (RIFF/WAVE) header from first binary chunk
         if (rawMessage.length >= 44 && rawMessage.slice(0, 4).toString('ascii') === 'RIFF') {
           audioData = rawMessage.slice(44);
-          hadWavHeader = true;
-          logTelemetry('PCM_VALIDATION_WAV_HEADER_DETECTED', {
+          logTelemetry('PCM_WAV_HEADER_STRIPPED', {
             requestId: normalizedRequestId,
             receivedBytes: rawMessage.length,
-            headerSize: 44,
             pcmBytes: audioData.length,
-            sampleRate: requestState.sampleRate,
             seq: requestState.seq,
           });
         }
-        
-        requestState.pcmChunks.push(audioData);
+
+        if (audioData.length === 0) return;
+
+        const seq = requestState.seq;
         requestState.seq += 1;
 
         if (!requestState.firstChunkAt) {
           requestState.firstChunkAt = Date.now();
-          logTelemetry('TTS_FIRST_CHUNK_RECEIVED', {
+          logTelemetry('TTS_FIRST_CHUNK_LATENCY', {
             requestId: normalizedRequestId,
-            textLength: requestState.textLength,
-            lang: requestState.lang,
-            preset: requestState.preset,
             latencyMs: requestState.firstChunkAt - requestState.startedAt,
-            chunkSize: audioData.length,
-            hadWavHeader: hadWavHeader,
+            chunkBytes: audioData.length,
             sampleRate: requestState.sampleRate,
             timestamp: new Date().toISOString(),
           });
-        } else if (requestState.seq % 5 === 0) {
-          logTelemetry('PCM_STREAMING_CHUNK', {
-            requestId: normalizedRequestId,
-            seq: requestState.seq,
-            pcmBytes: audioData.length,
-            totalPcmAccumulated: requestState.pcmChunks.reduce((sum, chunk) => sum + chunk.length, 0),
-            sampleRate: requestState.sampleRate,
-          });
         }
+
+        // Emit PCM16 chunk immediately for real-time client playback
+        io.to(requestState.socketId).emit('TTS_AUDIO_CHUNK', {
+          protocol: safeBuildProtocolMeta(buildProtocolMeta, 'TTS_AUDIO_CHUNK'),
+          requestId: normalizedRequestId,
+          seq,
+          format: PCM_FORMAT,
+          mime: PCM_MIME,
+          channels: requestState.channels,
+          sampleRate: requestState.sampleRate,
+          chunkBase64: audioData.toString('base64'),
+        });
         return;
       }
 
@@ -367,23 +282,25 @@ function createVibeVoiceRealtimeBridge({ wsUrl, io, buildProtocolMeta }) {
         }
 
         if (event === 'backend_stream_complete') {
-          logTelemetry('TTS_BACKEND_STREAM_COMPLETE', {
+          logTelemetry('TTS_STREAM_COMPLETE', {
             requestId: normalizedRequestId,
-            totalChunks: requestState.pcmChunks.length,
-            totalSize: requestState.pcmChunks.reduce((sum, chunk) => sum + chunk.length, 0),
+            chunksSent: requestState.seq,
             durationMs: Date.now() - requestState.startedAt,
-            timestamp: new Date().toISOString(),
           });
-          // finalize -> send WAV base64 -> done
-          try {
-            finalizeAsWav(requestState);
-          } catch (e) {
-            emitSystemMessage(requestState.socketId, 'TTS_BACKEND_ERROR', `Error empaquetando WAV: ${e?.message || e}`);
-            emitDone({ requestId: normalizedRequestId, reason: 'error' });
-            return;
-          }
           emitDone({ requestId: normalizedRequestId, reason: 'eos' });
+          return;
         }
+      }
+
+      // Handle explicit done event (sent by mock or compatible backends)
+      if (type === 'done') {
+        const doneReason = String(msg.reason || 'eos').toLowerCase();
+        logTelemetry('TTS_STREAM_DONE_EVENT', {
+          requestId: normalizedRequestId,
+          reason: doneReason,
+          chunksSent: requestState.seq,
+        });
+        emitDone({ requestId: normalizedRequestId, reason: doneReason === 'eos' ? 'eos' : 'cancel' });
       }
     });
 
@@ -399,17 +316,18 @@ function createVibeVoiceRealtimeBridge({ wsUrl, io, buildProtocolMeta }) {
 
     ws.on('close', () => {
       const requestState = activeRequests.get(normalizedRequestId);
-      if (!requestState) return;
-      
-      logTelemetry('VIBEV_WS_CLOSE', {
+      if (!requestState) return; // Already handled (stream_complete or stop)
+
+      logTelemetry('VIBEV_WS_CLOSE_UNEXPECTED', {
         requestId: normalizedRequestId,
-        hadChunks: requestState?.pcmChunks?.length > 0,
-        chunkCount: requestState?.pcmChunks?.length || 0,
+        chunksSent: requestState.seq,
         timestamp: new Date().toISOString(),
       });
-      
-      // Si cierra sin backend_stream_complete, igual marcamos done (probable cancel o error)
-      // Evitamos doble done si ya se limpió.
+
+      // If chunks were already sent to the client, treat close as end-of-stream;
+      // otherwise the WS closed before any audio arrived, which indicates an error.
+      const reason = requestState.seq > 0 ? 'eos' : 'error';
+      emitDone({ requestId: normalizedRequestId, reason });
       scheduleReconnect();
     });
 

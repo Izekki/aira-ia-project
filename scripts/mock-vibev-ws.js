@@ -3,34 +3,18 @@ const { WebSocketServer } = require('ws');
 const DEFAULT_PORT = 10001;
 const SAMPLE_RATE = 24000;
 
-function createSineWavBuffer({ durationMs = 900, frequency = 440, sampleRate = SAMPLE_RATE }) {
+/**
+ * Generate raw PCM16 mono sine-wave samples (no WAV header).
+ * Returns a Buffer of little-endian int16 samples.
+ */
+function createPcm16Buffer({ durationMs = 900, frequency = 440, sampleRate = SAMPLE_RATE }) {
   const sampleCount = Math.max(1, Math.floor((sampleRate * durationMs) / 1000));
-  const channels = 1;
-  const bitsPerSample = 16;
-  const blockAlign = channels * (bitsPerSample / 8);
-  const byteRate = sampleRate * blockAlign;
-  const dataSize = sampleCount * blockAlign;
-  const totalSize = 44 + dataSize;
-
-  const buffer = Buffer.alloc(totalSize);
-  buffer.write('RIFF', 0);
-  buffer.writeUInt32LE(totalSize - 8, 4);
-  buffer.write('WAVE', 8);
-  buffer.write('fmt ', 12);
-  buffer.writeUInt32LE(16, 16);
-  buffer.writeUInt16LE(1, 20);
-  buffer.writeUInt16LE(channels, 22);
-  buffer.writeUInt32LE(sampleRate, 24);
-  buffer.writeUInt32LE(byteRate, 28);
-  buffer.writeUInt16LE(blockAlign, 32);
-  buffer.writeUInt16LE(bitsPerSample, 34);
-  buffer.write('data', 36);
-  buffer.writeUInt32LE(dataSize, 40);
+  const buffer = Buffer.alloc(sampleCount * 2); // int16 = 2 bytes per sample
 
   for (let index = 0; index < sampleCount; index += 1) {
     const phase = (2 * Math.PI * frequency * index) / sampleRate;
     const sampleValue = Math.round(Math.sin(phase) * 0.25 * 32767);
-    buffer.writeInt16LE(sampleValue, 44 + index * 2);
+    buffer.writeInt16LE(sampleValue, index * 2);
   }
 
   return buffer;
@@ -63,12 +47,12 @@ server.on('connection', (socket, request) => {
     steps: url.searchParams.get('steps') || '',
   };
 
-  // Si la solicitud trae query params, iniciar stream inmediatamente
+  // If the request carries query params (VibeVoice-style), start streaming immediately
   if (queryParams.text) {
     const requestId = 'mock-' + Date.now();
     const text = String(queryParams.text).trim();
     const durationMs = Math.max(350, Math.min(1800, text.length * 22));
-    const wave = createSineWavBuffer({
+    const pcm = createPcm16Buffer({
       durationMs,
       frequency: 440,
       sampleRate: SAMPLE_RATE,
@@ -76,7 +60,6 @@ server.on('connection', (socket, request) => {
 
     const chunkSize = 3200;
     let cursor = 0;
-    let seq = 0;
 
     const intervalRef = setInterval(() => {
       if (socket.readyState !== socket.OPEN) {
@@ -85,7 +68,7 @@ server.on('connection', (socket, request) => {
         return;
       }
 
-      if (cursor >= wave.length) {
+      if (cursor >= pcm.length) {
         socket.send(JSON.stringify({
           type: 'log',
           event: 'backend_stream_complete',
@@ -96,14 +79,13 @@ server.on('connection', (socket, request) => {
         return;
       }
 
-      const chunk = wave.slice(cursor, Math.min(cursor + chunkSize, wave.length));
+      const chunk = pcm.slice(cursor, Math.min(cursor + chunkSize, pcm.length));
       socket.send(chunk);
       cursor += chunkSize;
-      seq += 1;
-    }, 55); // 55ms aprox para simular streaming
+    }, 55);
 
     activeStreams.set(requestId, { intervalRef });
-    console.log(`[mock-vibev] Iniciando stream para texto: "${text}" (${durationMs}ms)`);
+    console.log(`[mock-vibev] Iniciando stream PCM16 para texto: "${text}" (${durationMs}ms)`);
   }
 
   function stopStream(requestId, reason = 'cancel') {
@@ -152,7 +134,7 @@ server.on('connection', (socket, request) => {
 
     const text = String(payload?.text || '').trim();
     const durationMs = Math.max(350, Math.min(1800, text.length * 22));
-    const wave = createSineWavBuffer({
+    const pcm = createPcm16Buffer({
       durationMs,
       frequency: 440,
       sampleRate: SAMPLE_RATE,
@@ -160,7 +142,6 @@ server.on('connection', (socket, request) => {
 
     const chunkSize = 3200;
     let cursor = 0;
-    let seq = 0;
 
     const intervalRef = setInterval(() => {
       if (socket.readyState !== socket.OPEN) {
@@ -169,30 +150,20 @@ server.on('connection', (socket, request) => {
         return;
       }
 
-      if (cursor >= wave.length) {
+      if (cursor >= pcm.length) {
         clearInterval(intervalRef);
         activeStreams.delete(requestId);
         socket.send(JSON.stringify({
-          type: 'done',
+          type: 'log',
+          event: 'backend_stream_complete',
           requestId,
-          reason: 'eos',
         }));
         return;
       }
 
-      const chunk = wave.subarray(cursor, Math.min(cursor + chunkSize, wave.length));
+      const chunk = pcm.subarray(cursor, Math.min(cursor + chunkSize, pcm.length));
       cursor += chunk.length;
-
-      socket.send(JSON.stringify({
-        type: 'audio_chunk',
-        requestId,
-        seq,
-        mime: 'audio/wav',
-        sampleRate: SAMPLE_RATE,
-        chunkBase64: chunk.toString('base64'),
-      }));
-
-      seq += 1;
+      socket.send(chunk);
     }, 55);
 
     activeStreams.set(requestId, {

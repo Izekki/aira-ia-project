@@ -122,6 +122,7 @@ io.on('connection', (socket) => {
     console.log('[socket.TTS_REQUEST]', {
       socketId: socket.id,
       requestId,
+      textLength: text.length,
       text: text.substring(0, 50) + (text.length > 50 ? '...' : ''),
       lang,
       preset,
