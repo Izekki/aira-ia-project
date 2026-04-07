@@ -283,11 +283,26 @@ Uso: enviar audio TTS por bloques desde backend.
   },
   "requestId": "tts-1711740000000-ab12cd",
   "seq": 12,
-  "mime": "audio/wav",
+  "format": "pcm16",
+  "mime": "audio/pcm",
+  "channels": 1,
   "sampleRate": 24000,
   "chunkBase64": "<...>"
 }
 ```
+
+Campos:
+- format: "pcm16" cuando el backend emite PCM16 mono para streaming en tiempo real.
+- mime: "audio/pcm" para PCM16 raw; "audio/wav" para fallback WAV (legacy).
+- channels: numero de canales (1 = mono).
+- sampleRate: frecuencia de muestreo en Hz (default 24000).
+- chunkBase64: datos de audio codificados en base64.
+  - Cuando format=pcm16: bytes raw PCM16 little-endian mono sin cabecera WAV.
+  - Cuando format=wav (legacy): WAV completo con cabecera RIFF/WAVE.
+
+Notas:
+- El cliente debe iniciar reproduccion WebAudio en tiempo real cuando format=pcm16.
+- Si el cliente no soporta WebAudio o el format no es pcm16, debe acumular chunks y reproducir al recibir TTS_DONE (modo fallback).
 
 ### TTS_DONE
 

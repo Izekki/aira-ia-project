@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 const DEFAULT_LANG = 'es-MX';
 const DEFAULT_PRESET = 'balanced';
+const DEBUG_STREAMING = false;
 
 function createRequestId() {
   const randomChunk = Math.random().toString(36).slice(2, 8);
@@ -27,6 +28,19 @@ function decodeBase64Chunk(chunkBase64) {
   }
 }
 
+/**
+ * Convert PCM16 little-endian bytes to Float32 samples for WebAudio.
+ */
+function pcm16ToFloat32(bytes) {
+  const samples = Math.floor(bytes.length / 2);
+  const float32 = new Float32Array(samples);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let i = 0; i < samples; i += 1) {
+    float32[i] = view.getInt16(i * 2, true) / 32768.0;
+  }
+  return float32;
+}
+
 export default function useBackendTTSStream({ socket }) {
   const [isAiraSpeaking, setIsAiraSpeaking] = useState(false);
 
@@ -34,6 +48,11 @@ export default function useBackendTTSStream({ socket }) {
   const requestStoreRef = useRef(new Map());
   const audioRef = useRef(null);
   const objectUrlRef = useRef('');
+
+  // WebAudio streaming refs
+  const audioCtxRef = useRef(null);
+  const nextPlayTimeRef = useRef(0);
+  const streamingRequestIdRef = useRef('');
 
   const stopPlayback = useCallback(() => {
     if (audioRef.current) {
@@ -46,6 +65,19 @@ export default function useBackendTTSStream({ socket }) {
       URL.revokeObjectURL(objectUrlRef.current);
       objectUrlRef.current = '';
     }
+  }, []);
+
+  const stopStreamingPlayback = useCallback(() => {
+    if (audioCtxRef.current) {
+      try {
+        audioCtxRef.current.close();
+      } catch {
+        // ignore close errors
+      }
+      audioCtxRef.current = null;
+    }
+    nextPlayTimeRef.current = 0;
+    streamingRequestIdRef.current = '';
   }, []);
 
   const clearRequest = useCallback((requestId) => {
@@ -115,11 +147,76 @@ export default function useBackendTTSStream({ socket }) {
     });
   }, [clearRequest, stopPlayback]);
 
-  // Preparado para Paso B: cuando se confirme el formato final del backend,
-  // esta función es el punto de extensión para cola de reproducción WebAudio.
-  const queueRealtimeChunk = useCallback(() => {
-    return false;
-  }, []);
+  /**
+   * Queue a PCM16 chunk for real-time WebAudio playback.
+   * Returns true if the chunk was scheduled; false falls back to buffer+play mode.
+   */
+  const queueRealtimeChunk = useCallback(({ requestId, chunk, mime, sampleRate }) => {
+    // Only handle pcm16 / audio/pcm format
+    const fmt = String(mime || '').toLowerCase();
+    if (fmt !== 'audio/pcm' && !fmt.includes('pcm16')) {
+      return false;
+    }
+
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) {
+      return false;
+    }
+
+    if (!chunk || chunk.length < 2) {
+      return false;
+    }
+
+    try {
+      const effectiveSampleRate = sampleRate || 24000;
+
+      // Create (or re-create) AudioContext on the first chunk of each request
+      if (!audioCtxRef.current || streamingRequestIdRef.current !== requestId) {
+        stopStreamingPlayback();
+        audioCtxRef.current = new AudioContextClass({ sampleRate: effectiveSampleRate });
+        streamingRequestIdRef.current = requestId;
+      // Small initial jitter buffer (50 ms) to allow a few chunks to queue before
+      // the first source node starts, ensuring gapless sequential scheduling.
+        nextPlayTimeRef.current = audioCtxRef.current.currentTime + 0.05;
+        if (DEBUG_STREAMING) {
+          console.debug('[useBackendTTSStream] Streaming started', { requestId, effectiveSampleRate });
+        }
+      }
+
+      const ctx = audioCtxRef.current;
+
+      // Resume if browser suspended due to autoplay policy
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+
+      const float32 = pcm16ToFloat32(chunk);
+      if (float32.length === 0) {
+        return false;
+      }
+
+      const audioBuffer = ctx.createBuffer(1, float32.length, effectiveSampleRate);
+      audioBuffer.copyToChannel(float32, 0);
+
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+
+      // Schedule back-to-back; ensure we never schedule in the past
+      const startTime = Math.max(ctx.currentTime + 0.01, nextPlayTimeRef.current);
+      source.start(startTime);
+      nextPlayTimeRef.current = startTime + audioBuffer.duration;
+
+      return true;
+    } catch (err) {
+      console.error('[useBackendTTSStream] WebAudio scheduling error, falling back to buffer', {
+        requestId,
+        error: String(err),
+      });
+      stopStreamingPlayback();
+      return false;
+    }
+  }, [stopStreamingPlayback]);
 
   const cancel = useCallback((options = {}) => {
     const requestId = String(options.requestId || activeRequestIdRef.current || '').trim();
@@ -134,6 +231,7 @@ export default function useBackendTTSStream({ socket }) {
     }
 
     stopPlayback();
+    stopStreamingPlayback();
 
     if (requestId) {
       clearRequest(requestId);
@@ -143,7 +241,7 @@ export default function useBackendTTSStream({ socket }) {
     }
 
     setIsAiraSpeaking(false);
-  }, [clearRequest, socket, stopPlayback]);
+  }, [clearRequest, socket, stopPlayback, stopStreamingPlayback]);
 
   const speak = useCallback((text, options = {}) => {
     const normalizedText = String(text || '').trim();
@@ -318,10 +416,11 @@ export default function useBackendTTSStream({ socket }) {
   useEffect(() => {
     return () => {
       stopPlayback();
+      stopStreamingPlayback();
       requestStoreRef.current.clear();
       activeRequestIdRef.current = '';
     };
-  }, [stopPlayback]);
+  }, [stopPlayback, stopStreamingPlayback]);
 
   return {
     speak,

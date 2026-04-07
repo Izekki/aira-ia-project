@@ -96,7 +96,52 @@ Wake word:
 - `scripts/`: utilidades de sincronizacion.
 - `docs/`: notas de contrato y documentacion operativa.
 
-## Notas operativas
+## Streaming TTS backend (Paso B) — prueba manual con mock
+
+### Requisitos
+- Node.js 18+
+- `npm install` en la raiz del monorepo
+
+### Pasos para verificar streaming en tiempo real
+
+**Terminal 1 — Mock VibeVoice (simula backend TTS con PCM16 puro)**
+```bash
+node scripts/mock-vibev-ws.js
+# Deberia mostrar: [mock-vibev] WS mock escuchando en ws://127.0.0.1:10001
+```
+
+**Terminal 2 — Servidor Node**
+```bash
+npm run server
+# Verificar en consola:
+# [tts] vibev wsUrl = ws://127.0.0.1:10001  (o la URL real de VibeVoice)
+# [tts] Backend mode enabled
+```
+
+**Terminal 3 — Cliente React**
+```bash
+npm run client
+# Abre http://localhost:3000
+```
+
+**Verificacion**
+1. Escribe un mensaje en el chat y envia.
+2. En la consola del servidor deben aparecer:
+   - `[socket.TTS_REQUEST]` con socketId, requestId y textLength
+   - `[tts] TTS_REQUEST_RECEIVED`
+   - `[tts] VIBEV_WS_OPEN`
+   - `[tts] TTS_FIRST_CHUNK_LATENCY` — latencia hasta el primer chunk
+   - `[tts] TTS_STREAM_COMPLETE` — fin del stream
+3. En la consola del navegador (DevTools) deben aparecer:
+   - `[useBackendTTSStream.onAudioChunk] FIRST_CHUNK` — primer chunk con latencia
+   - Audio se reproduce **antes** de recibir `TTS_DONE` (streaming real).
+4. Cancela/interrumpe con un nuevo mensaje mientras habla — el audio se corta de inmediato.
+
+**Fallback (sin streaming)**
+Si el browser no tiene `AudioContext` o el formato no es `audio/pcm`, el cliente acumula
+todos los chunks y los reproduce al recibir `TTS_DONE` (comportamiento original).
+
+
 
 - Si aparece `EADDRINUSE` en puerto 4000, ya hay una instancia de servidor activa.
 - Si wake word detecta pero no inicia PTT, revisar permisos de microfono en navegador.
