@@ -1,0 +1,54 @@
+{
+  "_comment": "Copy this file to %APPDATA%\\Aira\\mcp-config.json (Windows) or ~/.aira/mcp-config.json and customise. It is NOT committed to the repo.",
+  "workspaceRoot": "C:\\AiraWorkspace",
+  "port": 4001,
+  "commandAllowlist": [
+    "git",
+    "node",
+    "npm",
+    "npx",
+    "pnpm",
+    "yarn",
+    "python",
+    "python3",
+    "pip",
+    "cargo",
+    "rustc",
+    "tsc",
+    "code",
+    "dir",
+    "ls",
+    "echo",
+    "type",
+    "cat",
+    "mkdir",
+    "cls",
+    "clear"
+  ],
+  "appAllowlist": {
+    "brave": {
+      "path": "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
+    },
+    "vscode": {
+      "path": "C:\\Users\\YOUR_USER\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe"
+    },
+    "steam": {
+      "path": "C:\\Program Files (x86)\\Steam\\steam.exe"
+    },
+    "epic": {
+      "path": "C:\\Program Files (x86)\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe"
+    },
+    "spotify": {
+      "path": "C:\\Users\\YOUR_USER\\AppData\\Roaming\\Spotify\\Spotify.exe"
+    },
+    "antigravity": {
+      "path": "C:\\Program Files\\Antigravity\\antigravity.exe"
+    },
+    "riotgames": {
+      "path": "C:\\Riot Games\\Riot Client\\RiotClientServices.exe"
+    },
+    "outplayed": {
+      "path": "C:\\Program Files (x86)\\Overwolf\\Outplayed\\Outplayed.exe"
+    }
+  }
+}
