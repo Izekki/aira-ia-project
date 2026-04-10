@@ -89,6 +89,23 @@ function parseArgs(str) {
 }
 
 /**
+ * Return true if the character at index `i` in `str` is preceded by an odd
+ * number of consecutive backslashes (i.e. it is escaped).
+ * @param {string} str
+ * @param {number} i
+ * @returns {boolean}
+ */
+function isEscaped(str, i) {
+  let backslashes = 0;
+  let j = i - 1;
+  while (j >= 0 && str[j] === '\\') {
+    backslashes++;
+    j--;
+  }
+  return backslashes % 2 !== 0;
+}
+
+/**
  * Split the args string into `key=value` tokens, respecting:
  * - double-quoted strings
  * - JSON arrays `[...]`
@@ -107,7 +124,7 @@ function tokenise(str) {
     const ch = str[i];
 
     if (inQuote) {
-      if (ch === quoteChar && str[i - 1] !== '\\') {
+      if (ch === quoteChar && !isEscaped(str, i)) {
         inQuote = false;
         current += ch;
       } else {

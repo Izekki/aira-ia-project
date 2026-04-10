@@ -130,7 +130,8 @@ function sendJson(res, statusCode, body) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(json),
-    'Access-Control-Allow-Origin': '127.0.0.1',
+    'Access-Control-Allow-Origin': 'http://127.0.0.1:4000',
+    'Vary': 'Origin',
   });
   res.end(json);
 }
@@ -195,7 +196,12 @@ async function createServer() {
   const server = http.createServer(async (req, res) => {
     // CORS pre-flight
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, { 'Access-Control-Allow-Origin': '127.0.0.1', 'Access-Control-Allow-Methods': 'GET,POST' });
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': 'http://127.0.0.1:4000',
+        'Access-Control-Allow-Methods': 'GET,POST',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Vary': 'Origin',
+      });
       res.end();
       return;
     }
