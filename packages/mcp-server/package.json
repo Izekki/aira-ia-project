@@ -1,0 +1,15 @@
+{
+  "name": "@aira/mcp-server",
+  "version": "1.0.0",
+  "description": "Aira MCP local agent server – filesystem, git, command, app-launcher, browser and utility tools with permission guardrails.",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "open": "^8.4.2"
+  }
+}

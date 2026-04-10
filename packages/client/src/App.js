@@ -4,6 +4,7 @@ import useSpeech from './hooks/useSpeech';
 import useTTS from './hooks/useTTS';
 import Visualizer from './components/Visualizer';
 import WakeActivationOverlay from './components/WakeActivationOverlay';
+import PermissionPrompt from './components/PermissionPrompt';
 import { normalizeSpeechKey } from './lib/textNormalization';
 import { buildInterruptPayload, buildUserInputPayload } from './lib/wsProtocol';
 import { FALLBACK_SOCKET_SERVER_URL, resolveVoiceClientConfig } from './lib/voiceClientConfig';
@@ -65,6 +66,7 @@ export default function App() {
   const [visualizerState, setVisualizerState] = useState(VISUALIZER_STATE.IDLE);
   const [chatInput, setChatInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [pendingPermission, setPendingPermission] = useState(null);
 
   const lastProcessedFinalIdRef = useRef(null);
   const lastEmittedSpeechTextRef = useRef('');
@@ -575,6 +577,11 @@ export default function App() {
     socket.on('STOP_TTS', onStopTts);
     socket.on('WAKE_WORD_DETECTED', onWakeWordDetected);
 
+    function onMcpPermissionRequest(payload) {
+      setPendingPermission(payload);
+    }
+    socket.on('MCP_PERMISSION_REQUEST', onMcpPermissionRequest);
+
     socket.connect();
 
     return () => {
@@ -588,11 +595,20 @@ export default function App() {
       socket.off('AIRA_RESPONSE', onAiraResponse);
       socket.off('STOP_TTS', onStopTts);
       socket.off('WAKE_WORD_DETECTED', onWakeWordDetected);
+      socket.off('MCP_PERMISSION_REQUEST', onMcpPermissionRequest);
       socket.disconnect();
       socketRef.current = null;
       setActiveSocket(null);
     };
   }, [socketServerUrl]);
+
+  function handlePermissionDecision(requestId, decision) {
+    setPendingPermission(null);
+    const socket = socketRef.current;
+    if (socket) {
+      socket.emit('MCP_PERMISSION_RESPONSE', { requestId, decision });
+    }
+  }
 
   useEffect(() => {
     if (isAiraSpeaking) {
@@ -924,6 +940,9 @@ export default function App() {
       </section>
 
       {!isWakeConfirmed && <WakeActivationOverlay onActivate={handleWakeActivation} />}
+      {pendingPermission && (
+        <PermissionPrompt request={pendingPermission} onDecide={handlePermissionDecision} />
+      )}
     </main>
   );
 }

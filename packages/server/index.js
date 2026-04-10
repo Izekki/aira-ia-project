@@ -8,6 +8,7 @@ const { createInputDeduper } = require('./ws/userInput');
 const { createUserInputHandler } = require('./ws/userInputHandler');
 const { createWakeWordRuntime } = require('./wakeword/engineRuntime');
 const { createTtsProvider } = require('./tts');
+const { handlePermissionResponse } = require('./mcp/permission-prompt');
 
 loadEnvFiles();
 
@@ -109,6 +110,15 @@ io.on('connection', (socket) => {
 
   socket.on('USER_INPUT', onUserInput);
 
+  // MCP permission response from client UI.
+  socket.on('MCP_PERMISSION_RESPONSE', (payload = {}) => {
+    try {
+      handlePermissionResponse(payload);
+    } catch (err) {
+      console.error('[socket] MCP_PERMISSION_RESPONSE error', err);
+    }
+  });
+
   socket.on('TTS_REQUEST', (payload = {}) => {
     const text = String(payload?.text || '').trim();
     if (!text) {
@@ -186,6 +196,7 @@ httpServer.listen(PORT, () => {
   console.log(`Aira Socket Server listening on http://127.0.0.1:${PORT}`);
   console.log('[INFO] Conectores LLM listos: Local (1234) & Gemini (Cloud).');
   console.log('[INFO] Voice migration prep:', runtimeConfig.voiceRuntime);
+  console.log('[INFO] MCP Agent tools disponibles vía /tool. Inicia el MCP server con: npm run mcp:server');
   void wakeWordRuntimeController.startListening();
 });
 

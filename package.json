@@ -11,7 +11,11 @@
     "dev": "concurrently \"npm run config:watch\" \"npm run server\" \"npm run client\"",
     "build:client": "npm run build --prefix packages/client",
     "desktop": "npm run build --prefix packages/client && npm run build --prefix packages/desktop",
-    "desktop:dev": "npm run dev --prefix packages/desktop"
+    "desktop:dev": "npm run dev --prefix packages/desktop",
+    "mcp:server": "node packages/mcp-server/index.js",
+    "mcp:dev": "node --watch packages/mcp-server/index.js",
+    "mcp:install": "npm install --prefix packages/mcp-server",
+    "dev:full": "concurrently \"npm run config:watch\" \"npm run server\" \"npm run client\" \"npm run mcp:server\""
   },
   "repository": {
     "type": "git",
