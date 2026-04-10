@@ -45,7 +45,14 @@ export function resolveVoiceClientConfig() {
   const clientConfig = cfg?.getClientConfig?.() || {};
   const socketHost = String(clientConfig.socketHost || cfg?.NETWORK_CONFIG?.socket?.host || '127.0.0.1');
   const socketPort = Number(clientConfig.socketPort || cfg?.NETWORK_CONFIG?.socket?.port || 4000);
+  // Allow Tauri desktop app (or any other host) to override the backend URL
+  // by setting window.__AIRA_BACKEND_URL__ before the page scripts run.
+  const desktopOverrideUrl =
+    typeof window.__AIRA_BACKEND_URL__ === 'string'
+      ? window.__AIRA_BACKEND_URL__.trim()
+      : '';
   const socketUrl =
+    desktopOverrideUrl ||
     String(clientConfig.socketUrl || '').trim() ||
     `http://${socketHost}:${Number.isFinite(socketPort) ? socketPort : 4000}`;
 

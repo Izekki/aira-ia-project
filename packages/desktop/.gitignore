@@ -1,0 +1,7 @@
+node_modules/
+
+# Tauri build output
+src-tauri/target/
+
+# Generated files by Tauri (created at build time)
+src-tauri/gen/
