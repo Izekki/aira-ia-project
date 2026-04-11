@@ -177,7 +177,7 @@ export default function useBackendTTSStream({ socket }) {
         streamingRequestIdRef.current = requestId;
       // Small initial jitter buffer (50 ms) to allow a few chunks to queue before
       // the first source node starts, ensuring gapless sequential scheduling.
-        nextPlayTimeRef.current = audioCtxRef.current.currentTime + 0.05;
+        nextPlayTimeRef.current = audioCtxRef.current.currentTime + 0.50;
         if (DEBUG_STREAMING) {
           console.debug('[useBackendTTSStream] Streaming started', { requestId, effectiveSampleRate });
         }

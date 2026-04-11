@@ -30,9 +30,23 @@ function normalizeWsUrl(inputWsUrl) {
   return url || DEFAULT_VIBEV_WS_URL;
 }
 
+function normalizeSpanishVoice(voice) {
+  const normalized = String(voice || '').trim();
+  if (!normalized) return '';
+
+  // Some VibeVoice builds require .pt; without it they may fallback to default speaker.
+  if (/^sp-/i.test(normalized) && !/\.pt$/i.test(normalized)) {
+    return `${normalized}.pt`;
+  }
+
+  return normalized;
+}
+
 function pickVoiceFromLang(lang, fallback = 'en-Carter_man') {
   const l = String(lang || '').toLowerCase();
-  if (l.startsWith('es') || l.startsWith('sp')) return 'sp-Spk1_man';
+  if (l.startsWith('es') || l.startsWith('sp')) {
+    return normalizeSpanishVoice(process.env.VIBEV_VOICE_ES) || 'sp-Spk0_woman.pt';
+  }
   if (l.startsWith('ja') || l.startsWith('jp')) return 'jp-Spk0_man';
   if (l.startsWith('en')) return 'en-Carter_man';
   return fallback;

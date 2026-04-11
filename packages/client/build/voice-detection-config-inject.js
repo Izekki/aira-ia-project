@@ -78,6 +78,11 @@ const ENV_VOICE_TTS_STREAMING =
     ? String(process.env.VOICE_TTS_STREAMING).trim().toLowerCase()
     : '';
 
+const ENV_VOICE_BROWSER_FALLBACK =
+  typeof process !== 'undefined' && process?.env?.VOICE_BROWSER_FALLBACK
+    ? String(process.env.VOICE_BROWSER_FALLBACK).trim().toLowerCase()
+    : '';
+
 const WAKE_WORDS_CONFIG = {
   // Array de palabras o frases de activación
   // ⚠️  PRINCIPAL: Usa "aira" como wake word principal
@@ -93,7 +98,7 @@ const WAKE_WORDS_CONFIG = {
 
   // Sub-configuración de cliente (navegador)
   client: {
-    // Palabras escuchadas por el navegador (reconocimiento de voz del sistema)
+    // Palabras escuchadas por el navegador (Web Speech API)
     default: ['hey aira', 'aira'],
     // Idioma de reconocimiento de voz en cliente
     language: 'es-MX', // Cambia a 'es-ES', 'en-US', etc. según lo necesites
@@ -134,7 +139,7 @@ const WAKE_WORDS_CONFIG = {
  *   - 0.6 a 0.8 = muy restrictivo (menos detecciones falsas, pero puede perder la tuya)
  */
 const CONFIDENCE_THRESHOLDS = {
-  // Cliente (navegador - reconocimiento de voz del sistema)
+  // Cliente (navegador con Web Speech API)
   // ⚠️  AJUSTA AQUÍ: Si la detección en el navegador es muy sensible o poco sensible
   client: {
     minConfidence: 0.18, // Balance recomendado para reducir falsos positivos sin perder sensibilidad
@@ -298,13 +303,13 @@ function parseEnvBoolean(rawValue, fallback = false) {
 const VOICE_RUNTIME_CONFIG = {
   migration: {
     phase: 'prep',
-    enableBackendStreamingProtocol: parseEnvBoolean(ENV_VOICE_TTS_STREAMING, false),
-    allowBrowserFallback: true,
+    enableBackendStreamingProtocol: parseEnvBoolean(ENV_VOICE_TTS_STREAMING, true),
+    allowBrowserFallback: parseEnvBoolean(ENV_VOICE_BROWSER_FALLBACK, false),
   },
 
   stt: {
     // browser | backend
-    mode: ENV_STT_MODE === 'backend' ? 'backend' : 'browser',
+    mode: ENV_STT_MODE === 'off' ? 'off' : (ENV_STT_MODE === 'backend' ? 'backend' : 'browser'),
     backendProvider: 'faster-whisper',
     backendTransport: 'socket.io',
     // Endpoint futuro para sesión de voz en streaming (no implementado aún)
@@ -313,7 +318,7 @@ const VOICE_RUNTIME_CONFIG = {
 
   tts: {
     // browser | backend
-    mode: ENV_TTS_MODE === 'browser' ? 'browser' : 'backend',
+    mode: ENV_TTS_MODE === 'off' ? 'off' : (ENV_TTS_MODE === 'backend' ? 'backend' : 'browser'),
     backendProvider: ENV_VOICE_TTS_PROVIDER || 'vibevoice-realtime',
     backendTransport: 'socket.io',
     backendChunkEvent: 'TTS_AUDIO_CHUNK',
@@ -321,7 +326,7 @@ const VOICE_RUNTIME_CONFIG = {
 
   network: {
     backendUrl: ENV_VOICE_BACKEND_URL || null,
-    vibevWsUrl: ENV_VIBEV_WS_URL || 'ws://127.0.0.1:3000',
+    vibevWsUrl: ENV_VIBEV_WS_URL || 'ws://127.0.0.1:10001',
   },
 };
 
