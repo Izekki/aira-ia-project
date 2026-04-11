@@ -25,7 +25,7 @@
  * 
  * CÓMO CAMBIAR:
  *   - Edita el array WAKE_WORDS_CONFIG
- *   - Ejemplo: ['heyaira', 'aira', 'ok aira']
+ *   - Ejemplo: ['aira', 'aira', 'ok aira']
  *   - El sistema detectará cualquiera de estas palabras (normalizadas)
  */
 const ENV_WAKE_WORD_MODEL =
@@ -80,8 +80,8 @@ const ENV_VOICE_TTS_STREAMING =
 
 const WAKE_WORDS_CONFIG = {
   // Array de palabras o frases de activación
-  // ⚠️  PRINCIPAL: Cambia aquí si quieres usar "heyaira" en vez de "aira"
-  enabled: ['hey aira', 'heyaira'],
+  // ⚠️  PRINCIPAL: Usa "aira" como wake word principal
+  enabled: ['hey aira', 'aira'],
 
   // Variantes adicionales aceptadas (ej: pronunciaciones alternativas)
   // Se normalizan automáticamente (se quitan acentos, espacios extras, etc.)
@@ -93,8 +93,8 @@ const WAKE_WORDS_CONFIG = {
 
   // Sub-configuración de cliente (navegador)
   client: {
-    // Palabras escuchadas por el navegador (Web Speech API)
-    default: ['hey aira', 'heyaira'],
+    // Palabras escuchadas por el navegador (reconocimiento de voz del sistema)
+    default: ['hey aira', 'aira'],
     // Idioma de reconocimiento de voz en cliente
     language: 'es-MX', // Cambia a 'es-ES', 'en-US', etc. según lo necesites
   },
@@ -103,11 +103,11 @@ const WAKE_WORDS_CONFIG = {
   server: {
     // Modelo ONNX a usar para detección (debe existir en packages/server/recorder/models/)
     // ⚠️  CAMBIA AQUÍ para usar diferentes modelos:
-    //     - 'heyaira.onnx' (recomendado - para "heyaira")
+    //     - 'aira.onnx' (recomendado - para "aira")
     //     - 'alexa_v0.1.onnx' (para "alexa")
     //     - 'hey_jarvis_v0.1.onnx' (para "hey jarvis")
     //     - 'hey_mycroft_v0.1.onnx' (para "hey mycroft")
-    model: ENV_WAKE_WORD_MODEL || 'heyaira.onnx',
+    model: ENV_WAKE_WORD_MODEL || 'aira.onnx',
 
     // Etiqueta legible del modelo (usada en logs y UI)
     // Se genera automáticamente a partir del nombre del modelo
@@ -134,14 +134,14 @@ const WAKE_WORDS_CONFIG = {
  *   - 0.6 a 0.8 = muy restrictivo (menos detecciones falsas, pero puede perder la tuya)
  */
 const CONFIDENCE_THRESHOLDS = {
-  // Cliente (navegador con Web Speech API)
+  // Cliente (navegador - reconocimiento de voz del sistema)
   // ⚠️  AJUSTA AQUÍ: Si la detección en el navegador es muy sensible o poco sensible
   client: {
     minConfidence: 0.18, // Balance recomendado para reducir falsos positivos sin perder sensibilidad
   },
 
   // Servidor (modelos ONNX locales)
-  // ⚠️  AJUSTA AQUÍ: Si tienes falsas alarmas o no detecta bien tu "heyaira"
+  // ⚠️  AJUSTA AQUÍ: Si tienes falsas alarmas o no detecta bien tu "aira"
   server: {
     // Umbral del clasificador de wake word (Alexa, Jarvis, HeyAIRA, etc.)
     // Cambia con env var: WAKE_WORD_THRESHOLD
@@ -244,8 +244,8 @@ const NETWORK_CONFIG = {
  * Mapea archivos .onnx a nombres legibles para mostrar en UI/logs.
  * 
  * CÓMO AGREGAR TU PROPIO MODELO:
- *   - Agrega una línea: 'heyaira.onnx': 'HeyAIRA Custom'
- *   - El archivo must existir en: packages/server/recorder/models/heyaira.onnx
+ *   - Agrega una línea: 'aira.onnx': 'AIRA Custom'
+ *   - El archivo must existir en: packages/server/recorder/models/aira.onnx
  */
 const MODEL_LABELS = {
   // Nombres de modelos conocidos -> Etiqueta legible
@@ -253,7 +253,7 @@ const MODEL_LABELS = {
   'hey_jarvis_v0.1.onnx': 'Hey Jarvis',
   'hey_mycroft_v0.1.onnx': 'Hey Mycroft',
   'hey_rhasspy_v0.1.onnx': 'Hey Rhasspy',
-  'heyaira.onnx': 'HeyAIRA (Custom)',
+  'aira.onnx': 'AIRA (Custom)',
   'timer_v0.1.onnx': 'Timer',
   'weather_v0.1.onnx': 'Weather',
 
@@ -313,7 +313,7 @@ const VOICE_RUNTIME_CONFIG = {
 
   tts: {
     // browser | backend
-    mode: ENV_TTS_MODE === 'backend' ? 'backend' : 'browser',
+    mode: ENV_TTS_MODE === 'browser' ? 'browser' : 'backend',
     backendProvider: ENV_VOICE_TTS_PROVIDER || 'vibevoice-realtime',
     backendTransport: 'socket.io',
     backendChunkEvent: 'TTS_AUDIO_CHUNK',
@@ -321,7 +321,7 @@ const VOICE_RUNTIME_CONFIG = {
 
   network: {
     backendUrl: ENV_VOICE_BACKEND_URL || null,
-    vibevWsUrl: ENV_VIBEV_WS_URL || 'ws://127.0.0.1:10001',
+    vibevWsUrl: ENV_VIBEV_WS_URL || 'ws://127.0.0.1:3000',
   },
 };
 

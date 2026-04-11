@@ -130,7 +130,7 @@ export default function useSpeech(options = {}) {
 
     if (!SpeechRecognition) {
       setIsSupported(false);
-      setError('Tu entorno no soporta reconocimiento de voz.');
+      setError('Reconocimiento de voz por navegador no disponible. El sistema usa el backend para STT.');
       return undefined;
     }
 

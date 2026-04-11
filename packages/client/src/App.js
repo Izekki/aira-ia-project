@@ -9,7 +9,7 @@ import { buildInterruptPayload, buildUserInputPayload } from './lib/wsProtocol';
 import { FALLBACK_SOCKET_SERVER_URL, resolveVoiceClientConfig } from './lib/voiceClientConfig';
 
 const VOICE_ENGINE_MISSING_MESSAGE =
-  'Usa un navegador basado en Chromium (Chrome/Edge) con servicios de Google activos';
+  'Motor de voz no disponible. Verifica que VibeVoice este corriendo en el puerto 3000.';
 const VISUALIZER_STATE = {
   IDLE: 'IDLE',
   LISTENING: 'LISTENING',
@@ -812,7 +812,7 @@ export default function App() {
                     : isSpeechBootReady
                       ? 'Reconocimiento en pausa'
                       : 'Inicializando canal de voz...'
-              : 'Web Speech API no disponible'}
+              : 'Reconocimiento de voz por navegador no disponible (modo backend activo)'}
           </span>
         </div>
 
