@@ -250,18 +250,19 @@ The first audio chunk triggers a `FIRST_CHUNK` log:
   requestId: "tts-...",
   latencyMs: 520,
   chunkByteLength: 4096,
-  format: "audio/pcm",   ← must be "audio/pcm" for PCM16 streaming
+  format: "audio/pcm",   ← the mime field value; "audio/pcm" means PCM16 streaming
   sampleRate: 24000,      ← must be 24000
   seq: 0
 }
 ```
 
-Key fields to confirm PCM16 streaming is active:
+The raw `TTS_AUDIO_CHUNK` Socket.IO event payload carries both `format` and
+`mime` as separate fields:
 
-| Field | Expected value |
+| Field in TTS_AUDIO_CHUNK event | Expected value |
 |---|---|
-| `format` (TTS_AUDIO_CHUNK event) | `pcm16` |
-| `mime` (TTS_AUDIO_CHUNK event) | `audio/pcm` |
+| `format` | `pcm16` |
+| `mime` | `audio/pcm` |
 | `sampleRate` | `24000` |
 
 If `format` is `audio/wav` or `mime` is not `audio/pcm`, the backend is not

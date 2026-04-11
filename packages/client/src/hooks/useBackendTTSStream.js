@@ -12,6 +12,13 @@ const PREBUFFER_MS = 300;
 // When the scheduled-ahead window drops below zero (underrun), re-prime with
 // this many ms of extra headroom so playback can recover gracefully.
 const UNDERRUN_REPRIME_S = 0.100; // 100 ms
+// Minimum offset (in seconds) added to AudioContext.currentTime when computing
+// the start time of an AudioBufferSourceNode.  Keeps the schedule strictly in
+// the future so the node fires immediately on the next processing quantum.
+const MIN_SCHEDULE_OFFSET_S = 0.001;
+// Extra ms to wait after the last scheduled audio node before tearing down the
+// AudioContext and clearing the request state.
+const CLEANUP_GRACE_MS = 150;
 
 function createRequestId() {
   const randomChunk = Math.random().toString(36).slice(2, 8);
@@ -246,8 +253,9 @@ export default function useBackendTTSStream({ socket }) {
 
         // Prebuffer satisfied: mark ready and flush all pending chunks
         prebufferReadyRef.current = true;
-        // Small 10 ms gap lets the AudioContext settle before the first node fires
-        nextPlayTimeRef.current = ctx.currentTime + 0.010;
+        // Start scheduling a small offset ahead of currentTime so the first
+        // source node fires on the next quantum rather than in the past.
+        nextPlayTimeRef.current = ctx.currentTime + MIN_SCHEDULE_OFFSET_S;
 
         if (DEBUG_STREAMING) {
           console.debug('[useBackendTTSStream] PREBUFFER_FLUSH', {
@@ -263,7 +271,7 @@ export default function useBackendTTSStream({ socket }) {
           const src = ctx.createBufferSource();
           src.buffer = buf;
           src.connect(ctx.destination);
-          const st = Math.max(ctx.currentTime + 0.001, nextPlayTimeRef.current);
+          const st = Math.max(ctx.currentTime + MIN_SCHEDULE_OFFSET_S, nextPlayTimeRef.current);
           src.start(st);
           nextPlayTimeRef.current = st + buf.duration;
         }
@@ -308,7 +316,7 @@ export default function useBackendTTSStream({ socket }) {
       source.buffer = audioBuffer;
       source.connect(ctx.destination);
 
-      const startTime = Math.max(ctx.currentTime + 0.001, nextPlayTimeRef.current);
+      const startTime = Math.max(ctx.currentTime + MIN_SCHEDULE_OFFSET_S, nextPlayTimeRef.current);
       source.start(startTime);
       nextPlayTimeRef.current = startTime + audioBuffer.duration;
 
@@ -509,7 +517,7 @@ export default function useBackendTTSStream({ socket }) {
       ) {
         const ctx = audioCtxRef.current;
         const remainingS = Math.max(0, nextPlayTimeRef.current - ctx.currentTime);
-        const delayMs = Math.round(remainingS * 1000) + 150; // 150 ms grace
+        const delayMs = Math.round(remainingS * 1000) + CLEANUP_GRACE_MS;
 
         if (DEBUG_STREAMING) {
           console.debug('[useBackendTTSStream] WAIT_FOR_WEBAUDIO', {
