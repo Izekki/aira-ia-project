@@ -193,3 +193,93 @@ npx @tauri-apps/cli icon path/to/your-icon.png
 This writes a complete icon set into `packages/desktop/src-tauri/icons/` and
 updates `tauri.conf.json` automatically.  A 1024×1024 PNG source image works
 best.
+
+---
+
+## Desktop keyboard + backend TTS configuration
+
+To run Aira in **keyboard-only mode** (no microphone) with **VibeVoice backend
+TTS**, set the following variables in your server `.env` before starting the
+backend:
+
+```env
+# Disable STT so the app never requests microphone permissions
+STT_MODE=off
+
+# Use VibeVoice backend for all TTS output
+TTS_MODE=backend
+
+# Enable PCM16 streaming protocol (avoids buffering the whole utterance)
+VOICE_TTS_STREAMING=true
+
+# VibeVoice WebSocket endpoint (adjust port if needed)
+VIBEV_WS_URL=ws://127.0.0.1:3000
+
+# Default Spanish speaker – female voice
+VIBEV_VOICE_ES=sp-Spk0_woman.pt
+
+# Disallow browser speech-synthesis fallback
+VOICE_BROWSER_FALLBACK=false
+```
+
+With these settings:
+- No microphone permission dialog appears on startup.
+- All speech output goes through VibeVoice using the female Spanish speaker
+  `sp-Spk0_woman.pt` (override `VIBEV_VOICE_ES` to change it).
+- PCM16 audio chunks are streamed in real time and played back via WebAudio
+  with a 300 ms prebuffer to avoid stutter.
+
+---
+
+## Verifying backend PCM16 streaming
+
+### Server logs
+When a TTS request is processed you should see lines like:
+
+```
+[tts] TTS_REQUEST_RECEIVED { requestId: "tts-...", lang: "es-MX", voice: "sp-Spk0_woman.pt", ... }
+[tts] TTS_FIRST_CHUNK_LATENCY { requestId: "tts-...", latencyMs: 450, chunkBytes: 4096, sampleRate: 24000 }
+[tts] TTS_STREAM_COMPLETE { requestId: "tts-...", chunksSent: 18, durationMs: 3200 }
+```
+
+### Client console (browser DevTools → Console)
+The first audio chunk triggers a `FIRST_CHUNK` log:
+
+```
+[useBackendTTSStream.onAudioChunk] FIRST_CHUNK {
+  requestId: "tts-...",
+  latencyMs: 520,
+  chunkByteLength: 4096,
+  format: "audio/pcm",   ← the mime field value; "audio/pcm" means PCM16 streaming
+  sampleRate: 24000,      ← must be 24000
+  seq: 0
+}
+```
+
+The raw `TTS_AUDIO_CHUNK` Socket.IO event payload carries both `format` and
+`mime` as separate fields:
+
+| Field in TTS_AUDIO_CHUNK event | Expected value |
+|---|---|
+| `format` | `pcm16` |
+| `mime` | `audio/pcm` |
+| `sampleRate` | `24000` |
+
+If `format` is `audio/wav` or `mime` is not `audio/pcm`, the backend is not
+sending raw PCM16.  Check that `VOICE_TTS_STREAMING=true` is set and that
+VibeVoice is reachable at `VIBEV_WS_URL`.
+
+### Enable verbose streaming telemetry
+Set `DEBUG_STREAMING = true` in
+`packages/client/src/hooks/useBackendTTSStream.js` (development only) to see
+per-chunk scheduling logs:
+
+```
+[useBackendTTSStream] PREBUFFER_ACCUMULATE { pendingMs: 85, targetMs: 300 }
+[useBackendTTSStream] PREBUFFER_READY { scheduledAheadMs: 312 }
+[useBackendTTSStream] CHUNK_SCHEDULED { chunkMs: 85, scheduledAheadMs: 240, underrunCount: 0 }
+```
+
+A non-zero `underrunCount` in `CHUNK_SCHEDULED` means the network is introducing
+more jitter than the prebuffer can absorb; increase `PREBUFFER_MS` in that file
+if stuttering persists.

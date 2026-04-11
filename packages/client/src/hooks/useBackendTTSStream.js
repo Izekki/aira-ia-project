@@ -4,6 +4,22 @@ const DEFAULT_LANG = 'es-MX';
 const DEFAULT_PRESET = 'balanced';
 const DEBUG_STREAMING = false;
 
+// ── Streaming playback tuning ──────────────────────────────────────────────
+// Accumulate this many ms of PCM audio before starting WebAudio playback to
+// avoid stutter caused by network jitter emptying the scheduler queue before
+// enough chunks have arrived.
+const PREBUFFER_MS = 300;
+// When the scheduled-ahead window drops below zero (underrun), re-prime with
+// this many ms of extra headroom so playback can recover gracefully.
+const UNDERRUN_REPRIME_S = 0.100; // 100 ms
+// Minimum offset (in seconds) added to AudioContext.currentTime when computing
+// the start time of an AudioBufferSourceNode.  Keeps the schedule strictly in
+// the future so the node fires immediately on the next processing quantum.
+const MIN_SCHEDULE_OFFSET_S = 0.001;
+// Extra ms to wait after the last scheduled audio node before tearing down the
+// AudioContext and clearing the request state.
+const CLEANUP_GRACE_MS = 150;
+
 function createRequestId() {
   const randomChunk = Math.random().toString(36).slice(2, 8);
   return `tts-${Date.now()}-${randomChunk}`;
@@ -54,6 +70,12 @@ export default function useBackendTTSStream({ socket }) {
   const nextPlayTimeRef = useRef(0);
   const streamingRequestIdRef = useRef('');
 
+  // Adaptive-jitter / prebuffer refs
+  const prebufferReadyRef = useRef(false);          // true once enough audio has accumulated
+  const pendingChunksRef = useRef([]);               // [{float32, sampleRate}] held before prebuffer is ready
+  const pendingChunksMsRef = useRef(0);             // total ms in pendingChunksRef
+  const underrunCountRef = useRef(0);               // cumulative underrun events for telemetry
+
   const stopPlayback = useCallback(() => {
     if (audioRef.current) {
       audioRef.current.pause();
@@ -78,6 +100,10 @@ export default function useBackendTTSStream({ socket }) {
     }
     nextPlayTimeRef.current = 0;
     streamingRequestIdRef.current = '';
+    prebufferReadyRef.current = false;
+    pendingChunksRef.current = [];
+    pendingChunksMsRef.current = 0;
+    underrunCountRef.current = 0;
   }, []);
 
   const clearRequest = useCallback((requestId) => {
@@ -149,6 +175,18 @@ export default function useBackendTTSStream({ socket }) {
 
   /**
    * Queue a PCM16 chunk for real-time WebAudio playback.
+   *
+   * Strategy:
+   *  1. Accumulate chunks in a pending queue until PREBUFFER_MS of audio has
+   *     arrived.  This ensures the WebAudio scheduler always has audio ready
+   *     to play when the first source node fires, eliminating the initial stutter
+   *     caused by a too-small jitter buffer.
+   *  2. After the prebuffer is ready, schedule each chunk back-to-back.  If the
+   *     scheduler falls behind (underrun: nextPlayTime < currentTime), re-prime
+   *     the schedule with UNDERRUN_REPRIME_S of headroom to recover cleanly.
+   *  3. Debug telemetry (prebufferedMs, scheduledAheadMs, underrunCount) is
+   *     emitted to console.debug when DEBUG_STREAMING is true.
+   *
    * Returns true if the chunk was scheduled; false falls back to buffer+play mode.
    */
   const queueRealtimeChunk = useCallback(({ requestId, chunk, mime, sampleRate }) => {
@@ -175,9 +213,7 @@ export default function useBackendTTSStream({ socket }) {
         stopStreamingPlayback();
         audioCtxRef.current = new AudioContextClass({ sampleRate: effectiveSampleRate });
         streamingRequestIdRef.current = requestId;
-      // Small initial jitter buffer (50 ms) to allow a few chunks to queue before
-      // the first source node starts, ensuring gapless sequential scheduling.
-        nextPlayTimeRef.current = audioCtxRef.current.currentTime + 0.50;
+        // nextPlayTimeRef will be set when the prebuffer flushes
         if (DEBUG_STREAMING) {
           console.debug('[useBackendTTSStream] Streaming started', { requestId, effectiveSampleRate });
         }
@@ -195,6 +231,84 @@ export default function useBackendTTSStream({ socket }) {
         return false;
       }
 
+      const chunkDurationMs = (float32.length / effectiveSampleRate) * 1000;
+
+      // ── Phase 1: prebuffer accumulation ────────────────────────────────
+      if (!prebufferReadyRef.current) {
+        pendingChunksRef.current.push({ float32, sampleRate: effectiveSampleRate });
+        pendingChunksMsRef.current += chunkDurationMs;
+
+        if (DEBUG_STREAMING) {
+          console.debug('[useBackendTTSStream] PREBUFFER_ACCUMULATE', {
+            requestId,
+            pendingMs: Math.round(pendingChunksMsRef.current),
+            targetMs: PREBUFFER_MS,
+          });
+        }
+
+        if (pendingChunksMsRef.current < PREBUFFER_MS) {
+          // Still accumulating – do not schedule yet
+          return true;
+        }
+
+        // Prebuffer satisfied: mark ready and flush all pending chunks
+        prebufferReadyRef.current = true;
+        // Start scheduling a small offset ahead of currentTime so the first
+        // source node fires on the next quantum rather than in the past.
+        nextPlayTimeRef.current = ctx.currentTime + MIN_SCHEDULE_OFFSET_S;
+
+        if (DEBUG_STREAMING) {
+          console.debug('[useBackendTTSStream] PREBUFFER_FLUSH', {
+            requestId,
+            chunks: pendingChunksRef.current.length,
+            prebufferedMs: Math.round(pendingChunksMsRef.current),
+          });
+        }
+
+        for (const pending of pendingChunksRef.current) {
+          const buf = ctx.createBuffer(1, pending.float32.length, pending.sampleRate);
+          buf.copyToChannel(pending.float32, 0);
+          const src = ctx.createBufferSource();
+          src.buffer = buf;
+          src.connect(ctx.destination);
+          const st = Math.max(ctx.currentTime + MIN_SCHEDULE_OFFSET_S, nextPlayTimeRef.current);
+          src.start(st);
+          nextPlayTimeRef.current = st + buf.duration;
+        }
+
+        pendingChunksRef.current = [];
+        pendingChunksMsRef.current = 0;
+
+        if (DEBUG_STREAMING) {
+          console.debug('[useBackendTTSStream] PREBUFFER_READY', {
+            requestId,
+            scheduledAheadMs: Math.round((nextPlayTimeRef.current - ctx.currentTime) * 1000),
+          });
+        }
+
+        return true;
+      }
+
+      // ── Phase 2: live scheduling with underrun detection ───────────────
+      const scheduledAheadS = nextPlayTimeRef.current - ctx.currentTime;
+
+      if (scheduledAheadS < 0) {
+        // Underrun: the scheduler fell behind real time (network jitter or tab
+        // throttling).  Re-prime with UNDERRUN_REPRIME_S of headroom so playback
+        // resumes without a prolonged gap.
+        underrunCountRef.current += 1;
+        nextPlayTimeRef.current = ctx.currentTime + UNDERRUN_REPRIME_S;
+
+        if (DEBUG_STREAMING) {
+          console.debug('[useBackendTTSStream] UNDERRUN', {
+            requestId,
+            underrunCount: underrunCountRef.current,
+            gapMs: Math.round(-scheduledAheadS * 1000),
+            reprimedMs: Math.round(UNDERRUN_REPRIME_S * 1000),
+          });
+        }
+      }
+
       const audioBuffer = ctx.createBuffer(1, float32.length, effectiveSampleRate);
       audioBuffer.copyToChannel(float32, 0);
 
@@ -202,10 +316,18 @@ export default function useBackendTTSStream({ socket }) {
       source.buffer = audioBuffer;
       source.connect(ctx.destination);
 
-      // Schedule back-to-back; ensure we never schedule in the past
-      const startTime = Math.max(ctx.currentTime + 0.01, nextPlayTimeRef.current);
+      const startTime = Math.max(ctx.currentTime + MIN_SCHEDULE_OFFSET_S, nextPlayTimeRef.current);
       source.start(startTime);
       nextPlayTimeRef.current = startTime + audioBuffer.duration;
+
+      if (DEBUG_STREAMING) {
+        console.debug('[useBackendTTSStream] CHUNK_SCHEDULED', {
+          requestId,
+          chunkMs: Math.round(chunkDurationMs),
+          scheduledAheadMs: Math.round((nextPlayTimeRef.current - ctx.currentTime) * 1000),
+          underrunCount: underrunCountRef.current,
+        });
+      }
 
       return true;
     } catch (err) {
@@ -379,7 +501,37 @@ export default function useBackendTTSStream({ socket }) {
       if (reason !== 'eos') {
         clearRequest(requestId);
         stopPlayback();
+        stopStreamingPlayback();
         setIsAiraSpeaking(false);
+        return;
+      }
+
+      // When PCM16 chunks were streamed via WebAudio, requestState.chunks is
+      // empty (chunks went directly to the scheduler).  In that case schedule
+      // the cleanup to fire after the last queued audio node finishes playing
+      // so that isAiraSpeaking stays true until the voice actually goes silent.
+      if (
+        streamingRequestIdRef.current === requestId &&
+        audioCtxRef.current &&
+        requestState?.chunks?.length === 0
+      ) {
+        const ctx = audioCtxRef.current;
+        const remainingS = Math.max(0, nextPlayTimeRef.current - ctx.currentTime);
+        const delayMs = Math.round(remainingS * 1000) + CLEANUP_GRACE_MS;
+
+        if (DEBUG_STREAMING) {
+          console.debug('[useBackendTTSStream] WAIT_FOR_WEBAUDIO', {
+            requestId,
+            remainingMs: Math.round(remainingS * 1000),
+            delayMs,
+          });
+        }
+
+        setTimeout(() => {
+          stopStreamingPlayback();
+          clearRequest(requestId);
+          setIsAiraSpeaking(false);
+        }, delayMs);
         return;
       }
 
@@ -411,7 +563,7 @@ export default function useBackendTTSStream({ socket }) {
       socket.off('STOP_TTS', onStopTts);
       socket.off('disconnect', onSocketDisconnect);
     };
-  }, [cancel, clearRequest, playBufferedRequest, queueRealtimeChunk, socket, stopPlayback]);
+  }, [cancel, clearRequest, playBufferedRequest, queueRealtimeChunk, socket, stopPlayback, stopStreamingPlayback]);
 
   useEffect(() => {
     return () => {
