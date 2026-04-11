@@ -114,7 +114,7 @@ node scripts/mock-vibev-ws.js
 ```bash
 npm run server
 # Verificar en consola:
-# [tts] vibev wsUrl = ws://127.0.0.1:10001  (o la URL real de VibeVoice)
+# [tts] vibev wsUrl = ws://127.0.0.1:3000  (URL real de VibeVoice, o usa VIBEV_WS_URL para apuntar al mock)
 # [tts] Backend mode enabled
 ```
 

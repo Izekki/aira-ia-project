@@ -93,7 +93,7 @@ const WAKE_WORDS_CONFIG = {
 
   // Sub-configuración de cliente (navegador)
   client: {
-    // Palabras escuchadas por el navegador (Web Speech API)
+    // Palabras escuchadas por el navegador (reconocimiento de voz del sistema)
     default: ['hey aira', 'aira'],
     // Idioma de reconocimiento de voz en cliente
     language: 'es-MX', // Cambia a 'es-ES', 'en-US', etc. según lo necesites
@@ -134,7 +134,7 @@ const WAKE_WORDS_CONFIG = {
  *   - 0.6 a 0.8 = muy restrictivo (menos detecciones falsas, pero puede perder la tuya)
  */
 const CONFIDENCE_THRESHOLDS = {
-  // Cliente (navegador con Web Speech API)
+  // Cliente (navegador - reconocimiento de voz del sistema)
   // ⚠️  AJUSTA AQUÍ: Si la detección en el navegador es muy sensible o poco sensible
   client: {
     minConfidence: 0.18, // Balance recomendado para reducir falsos positivos sin perder sensibilidad
@@ -313,7 +313,7 @@ const VOICE_RUNTIME_CONFIG = {
 
   tts: {
     // browser | backend
-    mode: ENV_TTS_MODE === 'backend' ? 'backend' : 'browser',
+    mode: ENV_TTS_MODE === 'browser' ? 'browser' : 'backend',
     backendProvider: ENV_VOICE_TTS_PROVIDER || 'vibevoice-realtime',
     backendTransport: 'socket.io',
     backendChunkEvent: 'TTS_AUDIO_CHUNK',
@@ -321,7 +321,7 @@ const VOICE_RUNTIME_CONFIG = {
 
   network: {
     backendUrl: ENV_VOICE_BACKEND_URL || null,
-    vibevWsUrl: ENV_VIBEV_WS_URL || 'ws://127.0.0.1:10001',
+    vibevWsUrl: ENV_VIBEV_WS_URL || 'ws://127.0.0.1:3000',
   },
 };
 

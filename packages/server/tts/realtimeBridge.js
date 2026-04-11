@@ -1,6 +1,6 @@
 const WebSocket = require('ws');
 
-const DEFAULT_VIBEV_WS_URL = 'ws://127.0.0.1:10001';
+const DEFAULT_VIBEV_WS_URL = 'ws://127.0.0.1:3000';
 const RECONNECT_DELAY_MS = 1500; // se mantiene por compat, pero VibeVoice se conecta por-request
 const REQUEST_TIMEOUT_MS = 20000;
 

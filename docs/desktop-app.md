@@ -165,7 +165,7 @@ via the `TAURI_CONFIG` override mechanism, so no manual edits to
 │  └── bridges TTS_AUDIO_CHUNK / TTS_DONE      │
 │      events from VibeVoice → client          │
 └─────────────────┬───────────────────────────┘
-                  │ WebSocket (port 10001 default)
+                  │ WebSocket (port 3000 default)
 ┌─────────────────▼───────────────────────────┐
 │  VibeVoice TTS service (external)            │
 └─────────────────────────────────────────────┘

@@ -31,11 +31,11 @@ export function resolveVoiceClientConfig() {
       wakeAutoStopAfterFinalMs: 700,
       wakeMaxSessionMs: 18000,
       sttMode: 'browser',
-      ttsMode: 'browser',
+      ttsMode: 'backend',
       ttsProvider: 'vibevoice-realtime',
       browserFallbackEnabled: true,
       backendStreamingEnabled: false,
-      vibevWsUrl: 'ws://127.0.0.1:10001',
+      vibevWsUrl: 'ws://127.0.0.1:3000',
       serverWakeWordThreshold: 0.1,
       socketUrl: FALLBACK_SOCKET_SERVER_URL,
     };
@@ -73,7 +73,7 @@ export function resolveVoiceClientConfig() {
       Number(clientConfig.wakeMaxSessionMs || cfg?.TIMING_CONFIG?.speechCapture?.wakeMaxSessionMs || 18000)
     ),
     sttMode: String(clientConfig.sttMode || cfg?.VOICE_RUNTIME_CONFIG?.stt?.mode || 'browser'),
-    ttsMode: String(clientConfig.ttsMode || cfg?.VOICE_RUNTIME_CONFIG?.tts?.mode || 'browser'),
+    ttsMode: String(clientConfig.ttsMode || cfg?.VOICE_RUNTIME_CONFIG?.tts?.mode || 'backend'),
     ttsProvider: String(
       clientConfig.ttsProvider || cfg?.VOICE_RUNTIME_CONFIG?.tts?.backendProvider || 'vibevoice-realtime'
     ),
