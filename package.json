@@ -9,7 +9,9 @@
     "server": "node packages/server/index.js",
     "mock:vibev": "node scripts/mock-vibev-ws.js",
     "dev": "concurrently \"npm run config:watch\" \"npm run server\" \"npm run client\"",
-    "build:client": "npm run build --prefix packages/client"
+    "build:client": "npm run build --prefix packages/client",
+    "desktop": "npm run build --prefix packages/client && npm run build --prefix packages/desktop",
+    "desktop:dev": "npm run dev --prefix packages/desktop"
   },
   "repository": {
     "type": "git",

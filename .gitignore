@@ -160,3 +160,7 @@ GUIA_INICIO_WEB_ONLY.md
 
 # recorder
 recorder/
+
+# Rust / Tauri build artifacts
+packages/desktop/src-tauri/target/
+packages/desktop/src-tauri/gen/
