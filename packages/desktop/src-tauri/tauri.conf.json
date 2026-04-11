@@ -4,7 +4,7 @@
   "identifier": "com.aira.desktop",
   "build": {
     "frontendDist": "../../client/build",
-    "devUrl": "http://localhost:3000",
+    "devUrl": "http://localhost:3001",
     "beforeBuildCommand": "npm run build --prefix ../client",
     "beforeDevCommand": ""
   },

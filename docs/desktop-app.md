@@ -21,6 +21,21 @@ normally).
 | **Aira Node backend running** | `npm run server` from the repo root |
 | **VibeVoice** *(optional)* | Only required when using backend TTS. Run externally before starting Aira. |
 
+### Port assignments
+
+| Service | Default port |
+|---|---|
+| **VibeVoice** (TTS backend / venv) | **3000** |
+| **React client** dev server | **3001** |
+| **Node backend** | **4000** |
+
+> **Why 3001 for the client?**  
+> VibeVoice already occupies port 3000.  Starting the React dev server on 3001
+> avoids the conflict and ensures Tauri dev mode loads the correct Aira UI
+> instead of the VibeVoice demo.  When Create React App prompts
+> *"Something is already running on port 3000 – would you like to run on 3001?"*
+> answer **Y**.
+
 Install the Tauri CLI once (inside the desktop package):
 
 ```bash
@@ -41,14 +56,19 @@ npm install -g @tauri-apps/cli@^2
 ### Development mode (recommended)
 
 In development mode Tauri loads the UI from the **CRA dev server** running at
-`http://localhost:3000`, giving you hot-reload.
+`http://localhost:3001`, giving you hot-reload.
+
+> **VibeVoice on port 3000?** — That's expected.  Keep VibeVoice on 3000 and
+> let the React dev server start on **3001** (CRA will auto-suggest it when 3000
+> is taken).  Tauri dev is pre-configured to point at 3001 so you will see the
+> correct Aira UI, not the VibeVoice demo.
 
 **Terminal 1 — backend**
 ```bash
 npm run server
 ```
 
-**Terminal 2 — React dev server**
+**Terminal 2 — React dev server** *(let it use port 3001 when prompted)*
 ```bash
 npm run client
 ```
@@ -103,6 +123,29 @@ The Rust side reads this variable at startup and injects it into the webview as
 `window.__AIRA_BACKEND_URL__` before any page script runs.  The React client
 config (`voiceClientConfig.js`) checks this property first, so it takes
 precedence over any value in `voice-detection-config-inject.js`.
+
+---
+
+## Overriding the dev server URL
+
+By default `npm run desktop:dev` loads the Aira React client from
+`http://localhost:3001`.  If for any reason you run the React dev server on a
+different port, set `AIRA_DESKTOP_DEV_URL` before starting:
+
+```bash
+# Linux / macOS
+AIRA_DESKTOP_DEV_URL=http://localhost:3002 npm run desktop:dev
+
+# Windows (PowerShell)
+$env:AIRA_DESKTOP_DEV_URL="http://localhost:3002"; npm run desktop:dev
+
+# Windows (cmd)
+set AIRA_DESKTOP_DEV_URL=http://localhost:3002 && npm run desktop:dev
+```
+
+The `scripts/desktop-dev.js` helper reads this variable and passes it to Tauri
+via the `TAURI_CONFIG` override mechanism, so no manual edits to
+`tauri.conf.json` are required.
 
 ---
 
