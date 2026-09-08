@@ -318,7 +318,7 @@ const VOICE_RUNTIME_CONFIG = {
 
   tts: {
     // browser | backend
-    mode: ENV_TTS_MODE === 'off' ? 'off' : (ENV_TTS_MODE === 'backend' ? 'backend' : 'browser'),
+    mode: ENV_TTS_MODE === 'off' ? 'off' : (ENV_TTS_MODE === 'browser' ? 'browser' : 'backend'),
     backendProvider: ENV_VOICE_TTS_PROVIDER || 'vibevoice-realtime',
     backendTransport: 'socket.io',
     backendChunkEvent: 'TTS_AUDIO_CHUNK',

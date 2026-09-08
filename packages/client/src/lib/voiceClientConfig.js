@@ -51,6 +51,10 @@ export function resolveVoiceClientConfig() {
     typeof window.__AIRA_BACKEND_URL__ === 'string'
       ? window.__AIRA_BACKEND_URL__.trim()
       : '';
+  const serverVoiceRuntimeOverride =
+    typeof window.__AIRA_SERVER_VOICE_RUNTIME__ === 'object' && window.__AIRA_SERVER_VOICE_RUNTIME__
+      ? window.__AIRA_SERVER_VOICE_RUNTIME__
+      : null;
   const socketUrl =
     desktopOverrideUrl ||
     String(clientConfig.socketUrl || '').trim() ||
@@ -72,18 +76,42 @@ export function resolveVoiceClientConfig() {
       2000,
       Number(clientConfig.wakeMaxSessionMs || cfg?.TIMING_CONFIG?.speechCapture?.wakeMaxSessionMs || 18000)
     ),
-    sttMode: String(clientConfig.sttMode || cfg?.VOICE_RUNTIME_CONFIG?.stt?.mode || 'browser'),
-    ttsMode: String(clientConfig.ttsMode || cfg?.VOICE_RUNTIME_CONFIG?.tts?.mode || 'backend'),
+    sttMode: String(
+      serverVoiceRuntimeOverride?.sttMode ||
+      clientConfig.sttMode ||
+      cfg?.VOICE_RUNTIME_CONFIG?.stt?.mode ||
+      'browser'
+    ),
+    ttsMode: String(
+      serverVoiceRuntimeOverride?.ttsMode ||
+      clientConfig.ttsMode ||
+      cfg?.VOICE_RUNTIME_CONFIG?.tts?.mode ||
+      'backend'
+    ),
     ttsProvider: String(
-      clientConfig.ttsProvider || cfg?.VOICE_RUNTIME_CONFIG?.tts?.backendProvider || 'vibevoice-realtime'
+      serverVoiceRuntimeOverride?.ttsProvider ||
+      clientConfig.ttsProvider ||
+      cfg?.VOICE_RUNTIME_CONFIG?.tts?.backendProvider ||
+      'vibevoice-realtime'
     ),
     browserFallbackEnabled: Boolean(
-      clientConfig.browserFallbackEnabled ?? cfg?.VOICE_RUNTIME_CONFIG?.migration?.allowBrowserFallback ?? true
+      serverVoiceRuntimeOverride?.browserFallbackEnabled ??
+      clientConfig.browserFallbackEnabled ??
+      cfg?.VOICE_RUNTIME_CONFIG?.migration?.allowBrowserFallback ??
+      true
     ),
     backendStreamingEnabled: Boolean(
-      clientConfig.backendStreamingEnabled ?? cfg?.VOICE_RUNTIME_CONFIG?.migration?.enableBackendStreamingProtocol ?? false
+      serverVoiceRuntimeOverride?.backendStreamingEnabled ??
+      clientConfig.backendStreamingEnabled ??
+      cfg?.VOICE_RUNTIME_CONFIG?.migration?.enableBackendStreamingProtocol ??
+      false
     ),
-    vibevWsUrl: String(clientConfig.vibevWsUrl || cfg?.VOICE_RUNTIME_CONFIG?.network?.vibevWsUrl || ''),
+    vibevWsUrl: String(
+      serverVoiceRuntimeOverride?.vibevWsUrl ||
+      clientConfig.vibevWsUrl ||
+      cfg?.VOICE_RUNTIME_CONFIG?.network?.vibevWsUrl ||
+      ''
+    ),
     serverWakeWordThreshold: clampThreshold(cfg?.CONFIDENCE_THRESHOLDS?.server?.wakeWordThreshold, 0.1),
     socketUrl,
   };

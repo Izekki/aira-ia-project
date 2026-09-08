@@ -451,6 +451,33 @@ export default function App() {
       const protocolVersion = String(payload?.wsVersion || payload?.protocol?.version || 'n/a');
       const nextMessage = `Servidor listo. Version: ${serverVersion} | WS: ${protocolVersion}`;
       const wakeWordPayload = payload?.wakeWord || {};
+      const runtimeVoicePayload = payload?.voiceRuntime || {};
+
+      if (typeof window !== 'undefined') {
+        window.__AIRA_SERVER_VOICE_RUNTIME__ = {
+          ...runtimeVoicePayload,
+        };
+      }
+
+      setVoiceClientConfig((prev) => ({
+        ...prev,
+        sttMode: runtimeVoicePayload?.sttMode ? String(runtimeVoicePayload.sttMode) : prev.sttMode,
+        ttsMode: runtimeVoicePayload?.ttsMode ? String(runtimeVoicePayload.ttsMode) : prev.ttsMode,
+        ttsProvider: runtimeVoicePayload?.ttsProvider
+          ? String(runtimeVoicePayload.ttsProvider)
+          : prev.ttsProvider,
+        backendStreamingEnabled:
+          typeof runtimeVoicePayload?.backendStreamingEnabled === 'boolean'
+            ? runtimeVoicePayload.backendStreamingEnabled
+            : prev.backendStreamingEnabled,
+        browserFallbackEnabled:
+          typeof runtimeVoicePayload?.browserFallbackEnabled === 'boolean'
+            ? runtimeVoicePayload.browserFallbackEnabled
+            : prev.browserFallbackEnabled,
+        vibevWsUrl: runtimeVoicePayload?.vibevWsUrl
+          ? String(runtimeVoicePayload.vibevWsUrl)
+          : prev.vibevWsUrl,
+      }));
 
       setWakeRuntime((prev) => ({
         ...prev,
